@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash /data/home/brayden/projects/swag3/.cursor/skills/sync-skills/scripts/sync.sh)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebSearch",
+      "Bash(curl -s \"https://api.github.com/repos/shuttlefy/go-openapi3-spec\" 2>/dev/null | head -50)",
+      "Bash(curl -sI \"https://github.com/shuttlefy/go-openapi3-spec\" 2>/dev/null | grep -E \"^HTTP|^Location\")",
+      "Bash(gh repo view shuttlefy/go-openapi3-spec 2>/dev/null || echo \"not accessible via gh cli\")"
+    ]
+  }
+}
