@@ -825,6 +825,336 @@ func TestCommentsToDescription(t *testing.T) {
 	}
 }
 
+// ── xx.xx (package-qualified) type reference resolution ───────────────────────
+
+// TestSchemaBuilder_SubPackage_FullName verifies that a type from a sub-package
+// is emitted with its fully-qualified name in both $ref and components/schemas.
+//
+// Given: primary package = "main", struct User in package "models"
+// Expected:
+//   - $ref produced by "models.User" annotation → #/components/schemas/models.User
+//   - components/schemas key                    → "models.User"
+func TestSchemaBuilder_SubPackage_FullName(t *testing.T) {
+	resolver := NewResolver()
+	sb := NewSchemaBuilder(resolver)
+
+	sb.SetPrimaryPackage("main")
+	sb.RegisterPackage("models")
+	sb.RegisterStruct(&parser.RawStruct{
+		Name:        "User",
+		PackageName: "models",
+		Fields:      []parser.RawField{{Name: "ID", TypeName: "int64", JSONName: "id"}},
+	})
+	sb.BuildAll()
+
+	// Annotation "models.User" must resolve to $ref with full name.
+	s := sb.SchemaForType("models.User")
+	if s.Ref != "#/components/schemas/models.User" {
+		t.Errorf("models.User $ref = %q, want #/components/schemas/models.User", s.Ref)
+	}
+
+	// The components/schemas key must also be the full qualified name.
+	schemas := sb.Schemas()
+	if schemas.Get("models.User") == nil {
+		t.Error("components/schemas should have key 'models.User', not 'User'")
+	}
+	if schemas.Get("User") != nil {
+		t.Error("components/schemas must NOT have bare key 'User' for a sub-package type")
+	}
+}
+
+// TestSchemaBuilder_PrimaryPackage_ShortName verifies that a type from the
+// primary package keeps its short name (no prefix) in the output.
+func TestSchemaBuilder_PrimaryPackage_ShortName(t *testing.T) {
+	resolver := NewResolver()
+	sb := NewSchemaBuilder(resolver)
+
+	sb.SetPrimaryPackage("main")
+	sb.RegisterStruct(&parser.RawStruct{
+		Name:        "Pet",
+		PackageName: "main",
+		Fields:      []parser.RawField{{Name: "ID", TypeName: "int64", JSONName: "id"}},
+	})
+	sb.BuildAll()
+
+	s := sb.SchemaForType("Pet")
+	if s.Ref != "#/components/schemas/Pet" {
+		t.Errorf("Pet $ref = %q, want #/components/schemas/Pet", s.Ref)
+	}
+	if sb.Schemas().Get("Pet") == nil {
+		t.Error("components/schemas must have key 'Pet'")
+	}
+}
+
+// TestSchemaBuilder_SubPackage_CompositeFullName verifies that a composite
+// annotation like "bo.StockPage{items=[]bo.StockItem}" resolves both the base
+// type and the override to their fully-qualified schema names.
+func TestSchemaBuilder_SubPackage_CompositeFullName(t *testing.T) {
+	resolver := NewResolver()
+	sb := NewSchemaBuilder(resolver)
+
+	sb.SetPrimaryPackage("main")
+	sb.RegisterPackage("bo")
+	sb.RegisterStruct(&parser.RawStruct{
+		Name:        "StockPage",
+		PackageName: "bo",
+		Fields: []parser.RawField{
+			{Name: "Total", TypeName: "int64", JSONName: "total"},
+			{Name: "Items", TypeName: "interface{}", JSONName: "items"},
+		},
+	})
+	sb.RegisterStruct(&parser.RawStruct{
+		Name:        "StockItem",
+		PackageName: "bo",
+		Fields:      []parser.RawField{{Name: "PetID", TypeName: "int64", JSONName: "pet_id"}},
+	})
+	sb.BuildAll()
+
+	te := extractor.ParseTypeExpr("bo.StockPage{items=[]bo.StockItem}")
+	schema := sb.SchemaForTypeExpr(te, false)
+
+	// allOf[0] must point to bo.StockPage
+	if len(schema.AllOf) < 2 {
+		t.Fatalf("allOf len = %d, want >= 2", len(schema.AllOf))
+	}
+	if schema.AllOf[0].Ref != "#/components/schemas/bo.StockPage" {
+		t.Errorf("allOf[0].$ref = %q, want #/components/schemas/bo.StockPage", schema.AllOf[0].Ref)
+	}
+
+	// Override items: array of bo.StockItem
+	overrideProps := schema.AllOf[1].Properties
+	if overrideProps == nil {
+		t.Fatal("allOf[1] must have properties")
+	}
+	itemsProp := overrideProps.Get("items")
+	if itemsProp == nil {
+		t.Fatal("items property missing")
+	}
+	if itemsProp.Type != "array" {
+		t.Fatalf("items.type = %q, want array", itemsProp.Type)
+	}
+	if itemsProp.Items == nil || itemsProp.Items.Ref != "#/components/schemas/bo.StockItem" {
+		t.Errorf("items.items.$ref = %v, want #/components/schemas/bo.StockItem", itemsProp.Items)
+	}
+}
+
+// TestSchemaBuilder_DottedType_KnownPackage verifies that "pkg.Type" resolves
+// to $ref:pkg.Type (full qualified name) when pkg was registered via
+// RegisterPackage and the type belongs to that package.
+func TestSchemaBuilder_DottedType_KnownPackage(t *testing.T) {
+	resolver := NewResolver()
+	sb := NewSchemaBuilder(resolver)
+
+	sb.SetPrimaryPackage("main")
+	sb.RegisterPackage("models")
+	sb.RegisterStruct(&parser.RawStruct{
+		Name:        "User",
+		PackageName: "models",
+		Fields:      []parser.RawField{{Name: "ID", TypeName: "int64", JSONName: "id"}},
+	})
+	sb.BuildAll()
+
+	s := sb.SchemaForType("models.User")
+	if s.Ref == "" {
+		t.Errorf("models.User should produce a $ref, got type=%q", s.Type)
+	}
+	// Full name must be preserved in the $ref.
+	if s.Ref != "#/components/schemas/models.User" {
+		t.Errorf("models.User $ref = %q, want #/components/schemas/models.User", s.Ref)
+	}
+}
+
+// TestSchemaBuilder_DottedType_UnknownPackage verifies that "pkg.Type" is
+// treated as an unknown type when pkg has NOT been registered — the builder
+// must NOT silently fall back to the short name.
+func TestSchemaBuilder_DottedType_UnknownPackage(t *testing.T) {
+	resolver := NewResolver()
+	sb := NewSchemaBuilder(resolver)
+
+	// Register "User" as a type but do NOT register any package.
+	sb.RegisterStruct(&parser.RawStruct{
+		Name:   "User",
+		Fields: []parser.RawField{{Name: "ID", TypeName: "int64", JSONName: "id"}},
+	})
+	sb.BuildAll()
+
+	s := sb.SchemaForType("models.User")
+	// Package "models" is unknown → must NOT produce a $ref.
+	if s.Ref != "" {
+		t.Errorf("models.User with unknown package should not produce a $ref, got %q", s.Ref)
+	}
+	unknowns := sb.UnknownTypeNames()
+	found := false
+	for _, u := range unknowns {
+		if u == "models.User" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("models.User should appear in unknown types: %v", unknowns)
+	}
+}
+
+// TestSchemaBuilder_DottedType_MultiDot verifies that names with more than one
+// dot ("sql.ddlx.Row") are always rejected — "sql.ddlx" cannot be a Go
+// package identifier.
+func TestSchemaBuilder_DottedType_MultiDot(t *testing.T) {
+	resolver := NewResolver()
+	sb := NewSchemaBuilder(resolver)
+
+	// Register both "sql" and "ddlx" as packages, and "Row" as a type.
+	sb.RegisterPackage("sql")
+	sb.RegisterPackage("ddlx")
+	sb.RegisterStruct(&parser.RawStruct{
+		Name:   "Row",
+		Fields: []parser.RawField{{Name: "ID", TypeName: "int64", JSONName: "id"}},
+	})
+	sb.BuildAll()
+
+	s := sb.SchemaForType("sql.ddlx.Row")
+	// Multi-dot name must never silently resolve — even if "Row" is registered.
+	if s.Ref != "" {
+		t.Errorf("sql.ddlx.Row should not produce a $ref, got %q", s.Ref)
+	}
+	unknowns := sb.UnknownTypeNames()
+	found := false
+	for _, u := range unknowns {
+		if u == "sql.ddlx.Row" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("sql.ddlx.Row should appear in unknown types: %v", unknowns)
+	}
+}
+
+// TestSchemaBuilder_DottedType_Array verifies []models.User → array of $ref User
+// when "models" is a registered package.
+func TestSchemaBuilder_DottedType_Array(t *testing.T) {
+	resolver := NewResolver()
+	sb := NewSchemaBuilder(resolver)
+
+	sb.RegisterPackage("models")
+	sb.RegisterStruct(&parser.RawStruct{
+		Name:   "User",
+		Fields: []parser.RawField{{Name: "Name", TypeName: "string", JSONName: "name"}},
+	})
+	sb.BuildAll()
+
+	s := sb.SchemaForType("[]models.User")
+	if s.Type != "array" {
+		t.Fatalf("[]models.User schema type = %q, want array", s.Type)
+	}
+	if s.Items == nil || s.Items.Ref != "#/components/schemas/User" {
+		t.Errorf("items.$ref = %v, want #/components/schemas/User", s.Items)
+	}
+}
+
+// TestSchemaBuilder_DottedType_Primitive verifies that stdlib primitives
+// (time.Time) are NOT affected by the short-name fallback — they still produce
+// their primitive schemas directly.
+func TestSchemaBuilder_DottedType_Primitive(t *testing.T) {
+	resolver := NewResolver()
+	sb := NewSchemaBuilder(resolver)
+	sb.BuildAll()
+
+	s := sb.SchemaForType("time.Time")
+	if s.Type != "string" || s.Format != "date-time" {
+		t.Errorf("time.Time = {type:%q, format:%q}, want {string, date-time}", s.Type, s.Format)
+	}
+	// Must not produce a $ref even if "Time" happened to be registered.
+	if s.Ref != "" {
+		t.Errorf("time.Time should not be a $ref, got %q", s.Ref)
+	}
+}
+
+// TestSchemaBuilder_DottedType_UnknownFallsThrough verifies that a dotted name
+// whose short name is also unregistered falls through to the unknown-type path.
+func TestSchemaBuilder_DottedType_UnknownFallsThrough(t *testing.T) {
+	resolver := NewResolver()
+	sb := NewSchemaBuilder(resolver)
+	sb.BuildAll()
+
+	s := sb.SchemaForType("uuid.UUID")
+	// uuid.UUID is not registered, so we expect the fallback unknown schema.
+	if s.Ref != "" {
+		t.Errorf("uuid.UUID should not be a $ref when not registered, got %q", s.Ref)
+	}
+	if s.Type != "object" {
+		t.Errorf("uuid.UUID should fallback to type:object, got %q", s.Type)
+	}
+	unknowns := sb.UnknownTypeNames()
+	found := false
+	for _, u := range unknowns {
+		if u == "uuid.UUID" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("uuid.UUID should appear in unknown types: %v", unknowns)
+	}
+}
+
+// TestSchemaBuilder_DottedType_CompositeResponse verifies that
+// "models.BaseResponse{data=models.PagedList{list=[]models.User}}" resolves
+// correctly when all three types are registered under their short names.
+func TestSchemaBuilder_DottedType_CompositeResponse(t *testing.T) {
+	resolver := NewResolver()
+	sb := NewSchemaBuilder(resolver)
+
+	sb.RegisterPackage("models")
+	sb.RegisterStruct(&parser.RawStruct{
+		Name: "BaseResponse",
+		Fields: []parser.RawField{
+			{Name: "Code", TypeName: "int", JSONName: "code"},
+			{Name: "Data", TypeName: "interface{}", JSONName: "data"},
+		},
+	})
+	sb.RegisterStruct(&parser.RawStruct{
+		Name: "PagedList",
+		Fields: []parser.RawField{
+			{Name: "Total", TypeName: "int64", JSONName: "total"},
+			{Name: "List", TypeName: "interface{}", JSONName: "list"},
+		},
+	})
+	sb.RegisterStruct(&parser.RawStruct{
+		Name:   "User",
+		Fields: []parser.RawField{{Name: "ID", TypeName: "int64", JSONName: "id"}},
+	})
+	sb.BuildAll()
+
+	// Build schema for a fully-qualified composite type expression.
+	te := extractor.ParseTypeExpr("models.BaseResponse{data=models.PagedList{list=[]models.User}}")
+	schema := sb.SchemaForTypeExpr(te, false)
+
+	// Top level: allOf[  $ref:BaseResponse,  {properties:{data: allOf[...]}}  ]
+	if len(schema.AllOf) != 2 {
+		t.Fatalf("top-level allOf len = %d, want 2", len(schema.AllOf))
+	}
+	baseRef := schema.AllOf[0]
+	if baseRef.Ref != "#/components/schemas/BaseResponse" {
+		t.Errorf("allOf[0].$ref = %q, want #/components/schemas/BaseResponse", baseRef.Ref)
+	}
+
+	// The override inlines the data property.
+	overrideObj := schema.AllOf[1]
+	if overrideObj.Properties == nil {
+		t.Fatal("allOf[1] should have properties")
+	}
+	dataProp := overrideObj.Properties.Get("data")
+	if dataProp == nil {
+		t.Fatal("data property should exist in override")
+	}
+	// data is itself allOf[$ref:PagedList, {properties:{list:…}}]
+	if len(dataProp.AllOf) != 2 {
+		t.Fatalf("data.allOf len = %d, want 2", len(dataProp.AllOf))
+	}
+	pagedRef := dataProp.AllOf[0]
+	if pagedRef.Ref != "#/components/schemas/PagedList" {
+		t.Errorf("data.allOf[0].$ref = %q, want #/components/schemas/PagedList", pagedRef.Ref)
+	}
+}
+
 // ── unquoteConstValue unit tests ──────────────────────────────────────────────
 
 func TestUnquoteConstValue(t *testing.T) {

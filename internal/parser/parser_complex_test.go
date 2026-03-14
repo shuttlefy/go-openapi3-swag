@@ -404,14 +404,12 @@ func TestComplex_EnumIotaType(t *testing.T) {
 		}
 	}
 
-	// First iota const has value "iota"
-	if consts[0].Value != "iota" {
-		t.Errorf("PriorityLow.Value = %q, want iota", consts[0].Value)
-	}
-	// Subsequent iota consts have no explicit value
-	for i := 1; i < len(consts); i++ {
-		if consts[i].Value != "" {
-			t.Errorf("consts[%d].Value = %q, want empty (implicit iota)", i, consts[i].Value)
+	// iota is resolved to its decimal integer at parse time.
+	// PriorityLow = iota (0), PriorityMedium = 1, PriorityHigh = 2, PriorityCritical = 3.
+	wantValues := []string{"0", "1", "2", "3"}
+	for i, want := range wantValues {
+		if consts[i].Value != want {
+			t.Errorf("consts[%d] (%s).Value = %q, want %q", i, consts[i].Name, consts[i].Value, want)
 		}
 	}
 }

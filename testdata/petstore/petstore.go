@@ -68,6 +68,49 @@ const (
 // PetTag is a free-form label for filtering pets.
 type PetTag string
 
+// ── Numeric-type enums ────────────────────────────────────────────────────────
+
+// Priority is the scheduling priority of a task, ascending from lowest to highest.
+// Values are derived from iota+1 so that zero is never a valid priority.
+type Priority int
+
+const (
+	// PriorityLow is the default, background-level priority.
+	PriorityLow Priority = iota + 1
+	// PriorityNormal is the standard interactive priority.
+	PriorityNormal
+	// PriorityHigh is for time-sensitive operations.
+	PriorityHigh
+	// PriorityCritical is reserved for emergencies and alerts.
+	PriorityCritical
+)
+
+// SortOrder controls the direction of a sort operation.
+type SortOrder int8
+
+const (
+	// SortOrderDesc sorts results from largest to smallest.
+	SortOrderDesc SortOrder = -1
+	// SortOrderNone means no ordering guarantee.
+	SortOrderNone SortOrder = 0
+	// SortOrderAsc sorts results from smallest to largest.
+	SortOrderAsc SortOrder = 1
+)
+
+// PageSize is a predefined page size for list endpoints.
+type PageSize int32
+
+const (
+	// PageSizeSmall returns 10 items per page.
+	PageSizeSmall PageSize = 10
+	// PageSizeMedium returns 20 items per page.
+	PageSizeMedium PageSize = 20
+	// PageSizeLarge returns 50 items per page.
+	PageSizeLarge PageSize = 50
+	// PageSizeMax returns 100 items per page; the hard server-side cap.
+	PageSizeMax PageSize = 100
+)
+
 // ── Top-level types ───────────────────────────────────────────────────────────
 
 // BaseResponse is the universal response envelope for every API endpoint.

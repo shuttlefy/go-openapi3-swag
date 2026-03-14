@@ -37,6 +37,10 @@
 //	POST   /api/v1/categories            create category (recursive self-ref)
 //	GET    /api/v1/categories/:id        get category tree
 //
+//	GET    /api/v1/stock                 list stock (bo.xx / sql.ddlx.xx annotation demo)
+//	GET    /api/v1/stock/:petId          get stock for a pet
+//	PUT    /api/v1/stock/:petId          adjust stock quantity
+//
 // # swag3 features exercised
 //
 //   - Nested composite pagination @Success 200 {object} BaseResponse{data=PagedList{list=[]Pet}}
@@ -47,6 +51,7 @@
 //   - Deep nesting                CreateOrderRequest → Address + []OrderItem
 //   - Recursive reference         Category.Children []*Category → cycle via $ref
 //   - Cross-file struct           Address/OrderItem in types_order.go, referenced by main.go annotations
+//   - Dotted type references      bo.StockItem / sql.ddlx.StockPage in stock handlers (types_stock.go)
 //
 // # Configuration
 //
@@ -1001,6 +1006,11 @@ func main() {
 		// Category endpoints — recursive self-referential schema
 		api.POST("/categories", h.createCategory)
 		api.GET("/categories/:id", h.getCategory)
+
+		// Stock endpoints — bo.xx / sql.ddlx.xx dotted annotation demo
+		api.GET("/stock", h.listStock)
+		api.GET("/stock/:petId", h.getStock)
+		api.PUT("/stock/:petId", h.adjustStock)
 	}
 
 	// ── 3. Health check ───────────────────────────────────────────────────────

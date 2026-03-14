@@ -63,8 +63,8 @@ type Order struct {
 	Items           []OrderItem `json:"items"`
 	// Status uses the OrderStatus alias type so the enum is centralised in
 	// components/schemas/OrderStatus and referenced here via $ref.
-	Status          OrderStatus `json:"status"                       example:"pending"`
-	Note            string      `json:"note,omitempty"               example:"please deliver by Friday"`
-	PlacedAt        time.Time   `json:"placed_at"`
-	UpdatedAt       *time.Time  `json:"updated_at,omitempty"`
+	Status    OrderStatus `json:"status"                       example:"pending"`
+	Note      string      `json:"note,omitempty"               example:"please deliver by Friday"`
+	PlacedAt  time.Time   `json:"placed_at"`
+	UpdatedAt *time.Time  `json:"updated_at,omitempty"`
 }

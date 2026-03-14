@@ -8,7 +8,17 @@
       "WebSearch",
       "Bash(curl -s \"https://api.github.com/repos/shuttlefy/go-openapi3-spec\" 2>/dev/null | head -50)",
       "Bash(curl -sI \"https://github.com/shuttlefy/go-openapi3-spec\" 2>/dev/null | grep -E \"^HTTP|^Location\")",
-      "Bash(gh repo view shuttlefy/go-openapi3-spec 2>/dev/null || echo \"not accessible via gh cli\")"
+      "Bash(gh repo view shuttlefy/go-openapi3-spec 2>/dev/null || echo \"not accessible via gh cli\")",
+      "Bash(go test ./internal/extractor/... 2>&1 | head -50)",
+      "Bash(go test ./internal/extractor/... 2>&1)",
+      "Bash(go test ./... 2>&1)",
+      "Bash(go test ./internal/extractor/... -v -run \"MultiDot|Dotted\" 2>&1)",
+      "Bash(go build ./examples/petstore/... 2>&1)",
+      "Bash(go build ./examples/petstore/... 2>&1 && echo \"BUILD OK\")",
+      "Bash(go build ./... 2>&1)",
+      "Bash(go test ./internal/builder/... -v -run \"SubPackage|PrimaryPackage|DottedType_Known\" 2>&1)",
+      "Bash(go run ./cmd/swag3/ -dir examples/petstore -title \"Pet Store API\" -version \"1.0.0\" -output examples/petstore/openapi.json 2>&1 && echo \"DONE\")",
+      "Bash(go run ./cmd/swag3/ -dir examples/petstore -title \"Pet Store API\" -version \"1.0.0\" -output examples/petstore/openapi.json 2>&1)"
     ]
   }
 }

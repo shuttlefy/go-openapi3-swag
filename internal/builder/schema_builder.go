@@ -13,26 +13,54 @@ import (
 // SchemaBuilder converts RawStruct definitions into spec3 Schema objects and
 // manages the collected schemas for components.
 type SchemaBuilder struct {
-	resolver     *Resolver
-	structs      map[string]*parser.RawStruct    // name → struct
-	aliases      map[string]*parser.RawTypeAlias // name → type alias
-	constsByType map[string][]parser.RawConst    // aliasName → consts
-	schemas      *spec.OrderedSchemas            // built schemas
-	building     map[string]bool                 // cycle detection
-	unknownTypes map[string]bool                 // unregistered type names encountered
+	resolver      *Resolver
+	primaryPkg    string                          // package name of the primary scanned dir
+	structs       map[string]*parser.RawStruct    // short name → struct
+	aliases       map[string]*parser.RawTypeAlias // short name → type alias
+	constsByType  map[string][]parser.RawConst    // aliasName (short) → consts
+	schemas       *spec.OrderedSchemas            // built schemas (keyed by full schema name)
+	building      map[string]bool                 // cycle detection (short name)
+	unknownTypes  map[string]bool                 // unregistered type names encountered
+	knownPackages map[string]bool                 // package names from scanned source dirs
 }
 
 func NewSchemaBuilder(resolver *Resolver) *SchemaBuilder {
 	schemas := spec.NewOrderedSchemas()
 	return &SchemaBuilder{
-		resolver:     resolver,
-		structs:      make(map[string]*parser.RawStruct),
-		aliases:      make(map[string]*parser.RawTypeAlias),
-		constsByType: make(map[string][]parser.RawConst),
-		schemas:      &schemas,
-		building:     make(map[string]bool),
-		unknownTypes: make(map[string]bool),
+		resolver:      resolver,
+		structs:       make(map[string]*parser.RawStruct),
+		aliases:       make(map[string]*parser.RawTypeAlias),
+		constsByType:  make(map[string][]parser.RawConst),
+		schemas:       &schemas,
+		building:      make(map[string]bool),
+		unknownTypes:  make(map[string]bool),
+		knownPackages: make(map[string]bool),
 	}
+}
+
+// SetPrimaryPackage sets the name of the primary package (the one that
+// contains handler annotations).  Types from this package are registered
+// under their short names; types from other packages are registered under
+// their fully-qualified names (e.g. "bo.StockItem").
+func (sb *SchemaBuilder) SetPrimaryPackage(pkg string) {
+	sb.primaryPkg = pkg
+}
+
+// RegisterPackage registers a scanned package name so that dotted-type
+// annotations like "bo.Order" can be validated.  Must be called before
+// any schema resolution takes place.
+func (sb *SchemaBuilder) RegisterPackage(name string) {
+	sb.knownPackages[name] = true
+}
+
+// schemaNameFor returns the component schema name for a type.
+// Types from sub-packages get a fully-qualified name ("bo.StockItem");
+// types from the primary package keep their short name ("Pet").
+func (sb *SchemaBuilder) schemaNameFor(shortName, pkgName string) string {
+	if pkgName == "" || pkgName == sb.primaryPkg {
+		return shortName
+	}
+	return pkgName + "." + shortName
 }
 
 // UnknownTypeNames returns sorted names of types referenced but never registered.
@@ -46,16 +74,21 @@ func (sb *SchemaBuilder) UnknownTypeNames() []string {
 }
 
 // RegisterStruct registers a raw struct for later schema building.
+// The struct is looked up internally by its short name; in components/schemas
+// it is emitted under the fully-qualified name when it belongs to a
+// sub-package (e.g. "bo.StockItem" for a struct in package "bo").
 func (sb *SchemaBuilder) RegisterStruct(s *parser.RawStruct) {
+	schemaName := sb.schemaNameFor(s.Name, s.PackageName)
 	sb.structs[s.Name] = s
-	sb.resolver.Register(s.Name)
+	sb.resolver.RegisterWithSchemaName(s.Name, schemaName)
 }
 
 // RegisterTypeAlias registers a type alias (e.g. type Status string) so that
 // fields using it receive a $ref and a named schema is emitted in components.
 func (sb *SchemaBuilder) RegisterTypeAlias(a *parser.RawTypeAlias) {
+	schemaName := sb.schemaNameFor(a.Name, a.PackageName)
 	sb.aliases[a.Name] = a
-	sb.resolver.Register(a.Name)
+	sb.resolver.RegisterWithSchemaName(a.Name, schemaName)
 }
 
 // RegisterConst records a typed constant so its value can be added as an enum
@@ -106,7 +139,10 @@ func (sb *SchemaBuilder) SchemaForTypeExpr(te extractor.TypeExpr, isArray bool) 
 }
 
 func (sb *SchemaBuilder) getOrBuild(name string) *spec.Schema {
-	if existing := sb.schemas.Get(name); existing != nil {
+	// Use the full schema name (e.g. "bo.StockItem") as the key in the output
+	// schemas map so that components/schemas uses the correct qualified name.
+	schemaName := sb.resolver.SchemaName(name)
+	if existing := sb.schemas.Get(schemaName); existing != nil {
 		return existing
 	}
 	if raw, ok := sb.structs[name]; ok {
@@ -116,12 +152,12 @@ func (sb *SchemaBuilder) getOrBuild(name string) *spec.Schema {
 		sb.building[name] = true
 		schema := sb.buildStruct(raw)
 		delete(sb.building, name)
-		sb.schemas.Set(name, schema)
+		sb.schemas.Set(schemaName, schema)
 		return schema
 	}
 	if alias, ok := sb.aliases[name]; ok {
 		schema := sb.buildAliasSchema(alias)
-		sb.schemas.Set(name, schema)
+		sb.schemas.Set(schemaName, schema)
 		return schema
 	}
 	return nil
@@ -284,6 +320,30 @@ func (sb *SchemaBuilder) goTypeToSchema(typeName string) *spec.Schema {
 	if sb.resolver.IsRegistered(typeName) {
 		sb.getOrBuild(typeName)
 		return sb.resolver.RefSchema(typeName)
+	}
+
+	// Dotted-name resolution: "pkg.Type" where pkg must be a known scanned
+	// package name (a single identifier with no dots) and Type must be a
+	// registered schema name (also no dots).
+	//
+	// Rules:
+	//   - Only a single dot is allowed: "bo.Order" is valid; "sql.ddlx.Order"
+	//     is not, because "sql.ddlx" cannot be a Go identifier/package name.
+	//   - The package prefix must have been registered via RegisterPackage,
+	//     i.e. it must correspond to an actual scanned source directory.
+	//   - Silent last-segment stripping is intentionally NOT performed: if the
+	//     package is unknown or the name has multiple dots, the reference is
+	//     recorded as an unknown type and reported as a diagnostic.
+	if dotIdx := strings.Index(typeName, "."); dotIdx >= 0 {
+		pkgName := typeName[:dotIdx]
+		typePart := typeName[dotIdx+1:]
+		// Reject multi-dot names ("sql.ddlx.Order" → typePart still has a dot).
+		if !strings.Contains(typePart, ".") && sb.knownPackages[pkgName] {
+			if sb.resolver.IsRegistered(typePart) {
+				sb.getOrBuild(typePart)
+				return sb.resolver.RefSchema(typePart)
+			}
+		}
 	}
 
 	// Record unresolved reference for diagnostic reporting.

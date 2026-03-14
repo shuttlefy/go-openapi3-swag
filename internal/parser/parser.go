@@ -28,6 +28,22 @@ func (p *GoParser) Parse(dirs []string) (*RawAST, error) {
 }
 
 func (p *GoParser) walkDir(fset *token.FileSet, root string, result *RawAST) error {
+	// Pre-scan: read only root-level files (non-recursive) to determine the
+	// primary package before the full walk begins.  filepath.Walk processes
+	// entries in lexicographic order, so a sub-directory like "bo/" would be
+	// visited before files starting with later letters (e.g. "handlers_…"),
+	// causing result.Package to be set to "bo" instead of "main".
+	// By pinning result.Package from the root level first we ensure that sub-
+	// package types are correctly treated as non-primary.
+	if result.Package == "" {
+		if pkg := p.detectRootPackage(fset, root); pkg != "" {
+			result.Package = pkg
+			if !containsPkg(result.Packages, pkg) {
+				result.Packages = append(result.Packages, pkg)
+			}
+		}
+	}
+
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -48,36 +64,71 @@ func (p *GoParser) walkDir(fset *token.FileSet, root string, result *RawAST) err
 			return nil
 		}
 
+		pkgName := file.Name.Name
 		if result.Package == "" {
-			result.Package = file.Name.Name
+			result.Package = pkgName
+		}
+		// Collect all distinct package names across all scanned files.
+		if !containsPkg(result.Packages, pkgName) {
+			result.Packages = append(result.Packages, pkgName)
 		}
 		p.extractFile(fset, path, file, result)
 		return nil
 	})
 }
 
+// detectRootPackage reads the first non-test Go file directly inside root
+// (not in sub-directories) and returns its package name.
+// This is used to pin the primary package before the recursive walk begins.
+func (p *GoParser) detectRootPackage(fset *token.FileSet, root string) string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !isGoSourceFile(entry.Name()) {
+			continue
+		}
+		file, parseErr := goparser.ParseFile(fset, filepath.Join(root, entry.Name()), nil, 0)
+		if parseErr == nil {
+			return file.Name.Name
+		}
+	}
+	return ""
+}
+
 func isGoSourceFile(name string) bool {
 	return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
 }
 
+func containsPkg(pkgs []string, name string) bool {
+	for _, p := range pkgs {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *GoParser) extractFile(fset *token.FileSet, filePath string, file *ast.File, result *RawAST) {
+	pkgName := file.Name.Name
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
 			result.Functions = append(result.Functions, extractFunc(fset, filePath, d))
-			p.extractFuncBody(fset, filePath, d, result)
+			p.extractFuncBody(fset, filePath, pkgName, d, result)
 		case *ast.GenDecl:
 			switch d.Tok {
 			case token.TYPE:
-				p.extractTypes(fset, filePath, "", d, result)
+				p.extractTypes(fset, filePath, pkgName, "", d, result)
 			case token.CONST:
-				p.extractConsts(fset, filePath, "", d, result)
+				p.extractConsts(fset, filePath, pkgName, "", d, result)
 			}
 		}
 	}
 }
 
-func (p *GoParser) extractFuncBody(fset *token.FileSet, filePath string, fn *ast.FuncDecl, result *RawAST) {
+func (p *GoParser) extractFuncBody(fset *token.FileSet, filePath, pkgName string, fn *ast.FuncDecl, result *RawAST) {
 	if fn.Body == nil {
 		return
 	}
@@ -93,14 +144,14 @@ func (p *GoParser) extractFuncBody(fset *token.FileSet, filePath string, fn *ast
 		}
 		switch gd.Tok {
 		case token.TYPE:
-			p.extractTypes(fset, filePath, funcName, gd, result)
+			p.extractTypes(fset, filePath, pkgName, funcName, gd, result)
 		case token.CONST:
-			p.extractConsts(fset, filePath, funcName, gd, result)
+			p.extractConsts(fset, filePath, pkgName, funcName, gd, result)
 		}
 	}
 }
 
-func (p *GoParser) extractTypes(fset *token.FileSet, filePath, funcScope string, gd *ast.GenDecl, result *RawAST) {
+func (p *GoParser) extractTypes(fset *token.FileSet, filePath, pkgName, funcScope string, gd *ast.GenDecl, result *RawAST) {
 	for _, spec := range gd.Specs {
 		ts, ok := spec.(*ast.TypeSpec)
 		if !ok {
@@ -108,11 +159,13 @@ func (p *GoParser) extractTypes(fset *token.FileSet, filePath, funcScope string,
 		}
 		if st, ok := ts.Type.(*ast.StructType); ok {
 			s := extractStruct(fset, filePath, ts, st, gd)
+			s.PackageName = pkgName
 			s.FuncScope = funcScope
 			result.Structs = append(result.Structs, s)
 			continue
 		}
 		a := extractTypeAlias(filePath, ts, gd)
+		a.PackageName = pkgName
 		a.FuncScope = funcScope
 		result.TypeAliases = append(result.TypeAliases, a)
 	}
@@ -136,10 +189,12 @@ func extractTypeAlias(filePath string, ts *ast.TypeSpec, gd *ast.GenDecl) RawTyp
 	return a
 }
 
-func (p *GoParser) extractConsts(fset *token.FileSet, filePath, funcScope string, gd *ast.GenDecl, result *RawAST) {
+func (p *GoParser) extractConsts(fset *token.FileSet, filePath, pkgName, funcScope string, gd *ast.GenDecl, result *RawAST) {
 	var lastType string
-	for _, spec := range gd.Specs {
-		vs, ok := spec.(*ast.ValueSpec)
+	var lastExpr ast.Expr // expression template; repeated implicitly when a spec has no values
+
+	for iotaIdx, s := range gd.Specs {
+		vs, ok := s.(*ast.ValueSpec)
 		if !ok {
 			continue
 		}
@@ -150,18 +205,27 @@ func (p *GoParser) extractConsts(fset *token.FileSet, filePath, funcScope string
 			lastType = typeName
 		}
 
-		var value string
+		// If this spec has explicit values update the template; otherwise reuse the
+		// last one (Go iota inheritance: the expression is copied verbatim, only
+		// the iota counter advances).
+		var exprToEval ast.Expr
 		if len(vs.Values) > 0 {
-			value = exprToString(fset, vs.Values[0])
+			exprToEval = vs.Values[0]
+			lastExpr = exprToEval
+		} else {
+			exprToEval = lastExpr
 		}
+
+		value := evaluateConstExpr(exprToEval, iotaIdx)
 
 		for _, name := range vs.Names {
 			c := RawConst{
-				Name:      name.Name,
-				TypeName:  typeName,
-				Value:     value,
-				FilePath:  filePath,
-				FuncScope: funcScope,
+				Name:        name.Name,
+				PackageName: pkgName,
+				TypeName:    typeName,
+				Value:       value,
+				FilePath:    filePath,
+				FuncScope:   funcScope,
 			}
 			if vs.Doc != nil {
 				for _, cm := range vs.Doc.List {
@@ -173,20 +237,91 @@ func (p *GoParser) extractConsts(fset *token.FileSet, filePath, funcScope string
 	}
 }
 
-func exprToString(fset *token.FileSet, expr ast.Expr) string {
-	switch v := expr.(type) {
+// evaluateConstExpr resolves a const initialiser expression to its string
+// representation, substituting the iota counter where needed.
+//
+// Handles:
+//   - basic literals ("hello", 42, 3.14)
+//   - iota identifier → decimal string of iotaVal
+//   - binary expressions where both sides are resolvable (iota+1, iota<<2, …)
+//   - unary minus (-iota, -1)
+//   - parenthesised expressions
+//
+// Falls back to the raw source text for anything more exotic.
+func evaluateConstExpr(expr ast.Expr, iotaVal int) string {
+	if expr == nil {
+		return ""
+	}
+	switch e := expr.(type) {
 	case *ast.BasicLit:
-		return v.Value
+		return e.Value
+
 	case *ast.Ident:
-		return v.Name
+		if e.Name == "iota" {
+			return strconv.Itoa(iotaVal)
+		}
+		return e.Name
+
+	case *ast.ParenExpr:
+		return evaluateConstExpr(e.X, iotaVal)
+
+	case *ast.UnaryExpr:
+		operand := evaluateConstExpr(e.X, iotaVal)
+		if e.Op == token.SUB {
+			if v, err := strconv.ParseInt(operand, 0, 64); err == nil {
+				return strconv.FormatInt(-v, 10)
+			}
+		}
+		return e.Op.String() + operand
+
 	case *ast.BinaryExpr:
-		return exprToString(fset, v.X) + " " + v.Op.String() + " " + exprToString(fset, v.Y)
+		left := evaluateConstExpr(e.X, iotaVal)
+		right := evaluateConstExpr(e.Y, iotaVal)
+		lv, le := strconv.ParseInt(left, 0, 64)
+		rv, re := strconv.ParseInt(right, 0, 64)
+		if le == nil && re == nil {
+			switch e.Op {
+			case token.ADD:
+				return strconv.FormatInt(lv+rv, 10)
+			case token.SUB:
+				return strconv.FormatInt(lv-rv, 10)
+			case token.MUL:
+				return strconv.FormatInt(lv*rv, 10)
+			case token.QUO:
+				if rv != 0 {
+					return strconv.FormatInt(lv/rv, 10)
+				}
+			case token.SHL:
+				return strconv.FormatInt(lv<<uint(rv), 10)
+			case token.SHR:
+				return strconv.FormatInt(lv>>uint(rv), 10)
+			case token.OR:
+				return strconv.FormatInt(lv|rv, 10)
+			case token.AND:
+				return strconv.FormatInt(lv&rv, 10)
+			case token.XOR:
+				return strconv.FormatInt(lv^rv, 10)
+			case token.REM:
+				if rv != 0 {
+					return strconv.FormatInt(lv%rv, 10)
+				}
+			}
+		}
+		return left + " " + e.Op.String() + " " + right
+
 	case *ast.CallExpr:
-		return typeExpr(v.Fun) + "(...)"
+		// e.g. Type(iota) — evaluate the argument and wrap in the type call.
+		if len(e.Args) == 1 {
+			inner := evaluateConstExpr(e.Args[0], iotaVal)
+			return inner
+		}
+		return typeExpr(e.Fun) + "(...)"
+
 	default:
 		return fmt.Sprintf("%T", expr)
 	}
 }
+
 
 func extractFunc(fset *token.FileSet, filePath string, fn *ast.FuncDecl) RawFunc {
 	f := RawFunc{

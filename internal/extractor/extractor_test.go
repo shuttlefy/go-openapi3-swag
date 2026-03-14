@@ -1486,3 +1486,488 @@ func TestExtractor_EmptyProject(t *testing.T) {
 		t.Errorf("expected 0 diagnostics, got %+v", result.Diagnostics)
 	}
 }
+
+// ============================================================
+// xx.xx (package-qualified) type reference tests
+// ============================================================
+
+// TestParseTypeExpr_Dotted verifies that ParseTypeExpr preserves the full
+// dotted name for package-qualified references.
+func TestParseTypeExpr_Dotted(t *testing.T) {
+	tests := []struct {
+		input     string
+		wantName  string
+		wantOverN int // expected number of overrides
+	}{
+		// Simple qualified name — no braces.
+		{"models.User", "models.User", 0},
+		// stdlib primitive — no braces.
+		{"time.Time", "time.Time", 0},
+		// Third-party UUID.
+		{"uuid.UUID", "uuid.UUID", 0},
+		// Array of qualified type.
+		{"[]models.User", "[]models.User", 0},
+		// Map with qualified value type.
+		{"map[string]models.User", "map[string]models.User", 0},
+		// Composite: base type is qualified.
+		{"models.Response{data=models.User}", "models.Response", 1},
+		// Composite: override value is qualified.
+		{"BaseResponse{data=models.PagedList}", "BaseResponse", 1},
+		// Nested composite with qualified names at every level.
+		{"models.BaseResponse{data=pkg.PagedList{list=[]models.Pet}}", "models.BaseResponse", 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			te := ParseTypeExpr(tt.input)
+			if te.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", te.Name, tt.wantName)
+			}
+			if len(te.Overrides) != tt.wantOverN {
+				t.Errorf("len(Overrides) = %d, want %d", len(te.Overrides), tt.wantOverN)
+			}
+		})
+	}
+}
+
+// TestParseTypeExpr_Dotted_NestedOverride checks that the nested composite
+// override value itself is also preserved verbatim for recursive parsing.
+func TestParseTypeExpr_Dotted_NestedOverride(t *testing.T) {
+	te := ParseTypeExpr("models.BaseResponse{data=pkg.PagedList{list=[]models.Pet}}")
+	if te.Name != "models.BaseResponse" {
+		t.Errorf("Name = %q, want models.BaseResponse", te.Name)
+	}
+	if len(te.Overrides) != 1 {
+		t.Fatalf("len(Overrides) = %d, want 1", len(te.Overrides))
+	}
+	ov := te.Overrides[0]
+	if ov.Field != "data" {
+		t.Errorf("Overrides[0].Field = %q, want data", ov.Field)
+	}
+	// The override value should be kept verbatim — the builder calls
+	// ParseTypeExpr on it recursively.
+	if ov.TypeExpr != "pkg.PagedList{list=[]models.Pet}" {
+		t.Errorf("Overrides[0].TypeExpr = %q, want pkg.PagedList{list=[]models.Pet}", ov.TypeExpr)
+	}
+
+	// One more level of recursion.
+	inner := ParseTypeExpr(ov.TypeExpr)
+	if inner.Name != "pkg.PagedList" {
+		t.Errorf("inner.Name = %q, want pkg.PagedList", inner.Name)
+	}
+	if inner.Overrides[0].TypeExpr != "[]models.Pet" {
+		t.Errorf("inner override TypeExpr = %q, want []models.Pet", inner.Overrides[0].TypeExpr)
+	}
+}
+
+// TestParseParam_DottedType verifies @Param with package-qualified type names.
+func TestParseParam_DottedType(t *testing.T) {
+	tests := []struct {
+		raw          string
+		wantName     string
+		wantIn       string
+		wantTypeName string
+		wantRequired bool
+		wantDesc     string
+	}{
+		{
+			`id path uuid.UUID true "user identifier"`,
+			"id", "path", "uuid.UUID", true, "user identifier",
+		},
+		{
+			`body body models.CreateUserRequest true "user data"`,
+			"body", "body", "models.CreateUserRequest", true, "user data",
+		},
+		{
+			`filter query models.SearchFilter false "optional filter"`,
+			"filter", "query", "models.SearchFilter", false, "optional filter",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			p := parseParam(tt.raw)
+			if p.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", p.Name, tt.wantName)
+			}
+			if p.In != tt.wantIn {
+				t.Errorf("In = %q, want %q", p.In, tt.wantIn)
+			}
+			if p.TypeName != tt.wantTypeName {
+				t.Errorf("TypeName = %q, want %q", p.TypeName, tt.wantTypeName)
+			}
+			if p.Required != tt.wantRequired {
+				t.Errorf("Required = %v, want %v", p.Required, tt.wantRequired)
+			}
+			if p.Description != tt.wantDesc {
+				t.Errorf("Description = %q, want %q", p.Description, tt.wantDesc)
+			}
+		})
+	}
+}
+
+// TestParseResponse_DottedType verifies @Success/@Failure with qualified types.
+func TestParseResponse_DottedType(t *testing.T) {
+	tests := []struct {
+		raw           string
+		wantCode      string
+		wantTypeName  string
+		wantIsArray   bool
+		wantIsPrimary bool
+		wantDesc      string
+	}{
+		{
+			`200 {object} models.UserResponse "success"`,
+			"200", "models.UserResponse", false, false, "success",
+		},
+		{
+			`200 {array} models.User "list of users"`,
+			"200", "models.User", true, false, "list of users",
+		},
+		{
+			`404 {object} pkg.ErrorResponse "not found"`,
+			"404", "pkg.ErrorResponse", false, false, "not found",
+		},
+		// Composite with qualified base type.
+		{
+			`200 {object} models.BaseResponse{data=models.User} "ok"`,
+			"200", "models.BaseResponse{data=models.User}", false, false, "ok",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			r := parseResponse(tt.raw)
+			if r.Code != tt.wantCode {
+				t.Errorf("Code = %q, want %q", r.Code, tt.wantCode)
+			}
+			if r.TypeName != tt.wantTypeName {
+				t.Errorf("TypeName = %q, want %q", r.TypeName, tt.wantTypeName)
+			}
+			if r.IsArray != tt.wantIsArray {
+				t.Errorf("IsArray = %v, want %v", r.IsArray, tt.wantIsArray)
+			}
+			if r.Description != tt.wantDesc {
+				t.Errorf("Description = %q, want %q", r.Description, tt.wantDesc)
+			}
+		})
+	}
+}
+
+// TestParseTypeExpr_MultiDotted verifies that ParseTypeExpr preserves names
+// with two or more dots (e.g. sub-package references like sql.ddlx.Response).
+func TestParseTypeExpr_MultiDotted(t *testing.T) {
+	tests := []struct {
+		input     string
+		wantName  string
+		wantOverN int
+	}{
+		// Two-dot simple name.
+		{"sql.ddlx.Response", "sql.ddlx.Response", 0},
+		// Two-dot array.
+		{"[]sql.ddlx.Response", "[]sql.ddlx.Response", 0},
+		// Two-dot as composite base.
+		{"sql.ddlx.Page{data=[]bo.Order}", "sql.ddlx.Page", 1},
+		// Two-dot as override value.
+		{"bo.Page{data=sql.ddlx.Item}", "bo.Page", 1},
+		// Both base and override are two-dot.
+		{"sql.ddlx.Page{data=[]sql.ddlx.Row,meta=bo.Meta}", "sql.ddlx.Page", 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			te := ParseTypeExpr(tt.input)
+			if te.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", te.Name, tt.wantName)
+			}
+			if len(te.Overrides) != tt.wantOverN {
+				t.Errorf("len(Overrides) = %d, want %d", len(te.Overrides), tt.wantOverN)
+			}
+		})
+	}
+}
+
+// TestParseTypeExpr_MultiDotted_Override checks override field values for
+// multi-dot type expressions, including recursive parsing.
+func TestParseTypeExpr_MultiDotted_Override(t *testing.T) {
+	te := ParseTypeExpr("sql.ddlx.Page{data=[]bo.Order,meta=sql.ddlx.Meta}")
+	if te.Name != "sql.ddlx.Page" {
+		t.Errorf("Name = %q, want sql.ddlx.Page", te.Name)
+	}
+	if len(te.Overrides) != 2 {
+		t.Fatalf("len(Overrides) = %d, want 2", len(te.Overrides))
+	}
+	if te.Overrides[0].Field != "data" || te.Overrides[0].TypeExpr != "[]bo.Order" {
+		t.Errorf("Overrides[0] = %+v", te.Overrides[0])
+	}
+	if te.Overrides[1].Field != "meta" || te.Overrides[1].TypeExpr != "sql.ddlx.Meta" {
+		t.Errorf("Overrides[1] = %+v", te.Overrides[1])
+	}
+
+	// Recursive parse of the meta override.
+	inner := ParseTypeExpr(te.Overrides[1].TypeExpr)
+	if inner.Name != "sql.ddlx.Meta" {
+		t.Errorf("inner.Name = %q, want sql.ddlx.Meta", inner.Name)
+	}
+	if len(inner.Overrides) != 0 {
+		t.Errorf("inner should have no overrides, got %d", len(inner.Overrides))
+	}
+}
+
+// TestParseParam_MultiDotType verifies @Param with multi-dot type names.
+func TestParseParam_MultiDotType(t *testing.T) {
+	tests := []struct {
+		raw          string
+		wantName     string
+		wantIn       string
+		wantTypeName string
+		wantRequired bool
+		wantDesc     string
+	}{
+		{
+			`id path bo.ID true "business object ID"`,
+			"id", "path", "bo.ID", true, "business object ID",
+		},
+		{
+			`body body bo.CreateOrderReq true "order data"`,
+			"body", "body", "bo.CreateOrderReq", true, "order data",
+		},
+		{
+			`filter query sql.ddlx.Filter false "query filter"`,
+			"filter", "query", "sql.ddlx.Filter", false, "query filter",
+		},
+		{
+			`x-token header sql.ddlx.AuthToken true "auth token"`,
+			"x-token", "header", "sql.ddlx.AuthToken", true, "auth token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantTypeName, func(t *testing.T) {
+			p := parseParam(tt.raw)
+			if p.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", p.Name, tt.wantName)
+			}
+			if p.In != tt.wantIn {
+				t.Errorf("In = %q, want %q", p.In, tt.wantIn)
+			}
+			if p.TypeName != tt.wantTypeName {
+				t.Errorf("TypeName = %q, want %q", p.TypeName, tt.wantTypeName)
+			}
+			if p.Required != tt.wantRequired {
+				t.Errorf("Required = %v, want %v", p.Required, tt.wantRequired)
+			}
+			if p.Description != tt.wantDesc {
+				t.Errorf("Description = %q, want %q", p.Description, tt.wantDesc)
+			}
+		})
+	}
+}
+
+// TestParseResponse_MultiDotType verifies @Success/@Failure with multi-dot type names.
+func TestParseResponse_MultiDotType(t *testing.T) {
+	tests := []struct {
+		raw          string
+		wantCode     string
+		wantTypeName string
+		wantIsArray  bool
+		wantDesc     string
+	}{
+		{
+			`200 {object} bo.OrderResp "ok"`,
+			"200", "bo.OrderResp", false, "ok",
+		},
+		{
+			`200 {array} bo.OrderResp "list"`,
+			"200", "bo.OrderResp", true, "list",
+		},
+		{
+			`200 {object} sql.ddlx.Row "single row"`,
+			"200", "sql.ddlx.Row", false, "single row",
+		},
+		{
+			`400 {object} sql.ddlx.ErrResp "bad request"`,
+			"400", "sql.ddlx.ErrResp", false, "bad request",
+		},
+		// Composite with multi-dot base and multi-dot override.
+		{
+			`200 {object} sql.ddlx.Page{data=[]bo.Order} "paged orders"`,
+			"200", "sql.ddlx.Page{data=[]bo.Order}", false, "paged orders",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantTypeName, func(t *testing.T) {
+			r := parseResponse(tt.raw)
+			if r.Code != tt.wantCode {
+				t.Errorf("Code = %q, want %q", r.Code, tt.wantCode)
+			}
+			if r.TypeName != tt.wantTypeName {
+				t.Errorf("TypeName = %q, want %q", r.TypeName, tt.wantTypeName)
+			}
+			if r.IsArray != tt.wantIsArray {
+				t.Errorf("IsArray = %v, want %v", r.IsArray, tt.wantIsArray)
+			}
+			if r.Description != tt.wantDesc {
+				t.Errorf("Description = %q, want %q", r.Description, tt.wantDesc)
+			}
+		})
+	}
+}
+
+// TestExtract_MultiDotTypeOperation is an end-to-end test using bo.xx and
+// sql.ddlx.cc style type names in a full operation annotation.
+func TestExtract_MultiDotTypeOperation(t *testing.T) {
+	ast := buildAST(fn("CreateOrder",
+		"// @Summary Create an order",
+		"// @Tags orders",
+		"// @ID createOrder",
+		"// @Accept json",
+		"// @Produce json",
+		`// @Param body body bo.CreateOrderReq true "order payload"`,
+		`// @Param x-shop-id header bo.ShopID true "shop identifier"`,
+		`// @Success 200 {object} sql.ddlx.Page{data=[]bo.Order} "paginated result"`,
+		`// @Failure 400 {object} sql.ddlx.ErrResp "validation error"`,
+		`// @Failure 500 {object} sql.ddlx.ErrResp "server error"`,
+		"// @Router /orders [post]",
+	))
+
+	e := NewGoExtractor()
+	result, err := e.Extract(ast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Operations) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(result.Operations))
+	}
+	op := result.Operations[0]
+
+	// Header param should carry multi-dot type.
+	if len(op.Params) != 1 {
+		t.Fatalf("expected 1 param (header), got %d", len(op.Params))
+	}
+	if op.Params[0].TypeName != "bo.ShopID" {
+		t.Errorf("param[0].TypeName = %q, want bo.ShopID", op.Params[0].TypeName)
+	}
+
+	// Body → RequestBody with multi-dot type.
+	if op.RequestBody == nil {
+		t.Fatal("expected RequestBody")
+	}
+	if op.RequestBody.TypeName != "bo.CreateOrderReq" {
+		t.Errorf("requestBody.TypeName = %q, want bo.CreateOrderReq", op.RequestBody.TypeName)
+	}
+	if op.RequestBody.Type.Name != "bo.CreateOrderReq" {
+		t.Errorf("requestBody.Type.Name = %q, want bo.CreateOrderReq", op.RequestBody.Type.Name)
+	}
+
+	// 200 response — composite sql.ddlx.Page with bo.Order override.
+	var resp200 *ResponseAnnotation
+	for i := range op.Responses {
+		if op.Responses[i].Code == "200" {
+			resp200 = &op.Responses[i]
+			break
+		}
+	}
+	if resp200 == nil {
+		t.Fatal("missing 200 response")
+	}
+	if resp200.Type.Name != "sql.ddlx.Page" {
+		t.Errorf("200 type.Name = %q, want sql.ddlx.Page", resp200.Type.Name)
+	}
+	if len(resp200.Type.Overrides) != 1 {
+		t.Fatalf("200 overrides len = %d, want 1", len(resp200.Type.Overrides))
+	}
+	ov := resp200.Type.Overrides[0]
+	if ov.Field != "data" || ov.TypeExpr != "[]bo.Order" {
+		t.Errorf("200 override = %+v, want {data []bo.Order}", ov)
+	}
+
+	// 400 / 500 responses — simple multi-dot type.
+	for _, code := range []string{"400", "500"} {
+		var resp *ResponseAnnotation
+		for i := range op.Responses {
+			if op.Responses[i].Code == code {
+				resp = &op.Responses[i]
+				break
+			}
+		}
+		if resp == nil {
+			t.Fatalf("missing %s response", code)
+		}
+		if resp.Type.Name != "sql.ddlx.ErrResp" {
+			t.Errorf("%s type.Name = %q, want sql.ddlx.ErrResp", code, resp.Type.Name)
+		}
+	}
+}
+
+// TestExtract_DottedTypeOperation verifies that a full handler annotation that
+// uses package-qualified type names is correctly extracted end-to-end.
+func TestExtract_DottedTypeOperation(t *testing.T) {
+	ast := buildAST(fn("GetUser",
+		"// @Summary Get a user",
+		"// @Tags users",
+		"// @ID getUser",
+		`// @Param id path uuid.UUID true "user ID"`,
+		`// @Param X-Trace header models.TraceID false "trace header"`,
+		`// @Success 200 {object} models.BaseResponse{data=models.User} "ok"`,
+		`// @Failure 404 {object} pkg.ErrorResponse "not found"`,
+		"// @Router /users/{id} [get]",
+	))
+
+	e := NewGoExtractor()
+	result, err := e.Extract(ast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Operations) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(result.Operations))
+	}
+	op := result.Operations[0]
+
+	// Parameters
+	if len(op.Params) != 2 {
+		t.Fatalf("expected 2 params, got %d", len(op.Params))
+	}
+	idParam := op.Params[0]
+	if idParam.TypeName != "uuid.UUID" {
+		t.Errorf("param[0].TypeName = %q, want uuid.UUID", idParam.TypeName)
+	}
+	traceParam := op.Params[1]
+	if traceParam.TypeName != "models.TraceID" {
+		t.Errorf("param[1].TypeName = %q, want models.TraceID", traceParam.TypeName)
+	}
+
+	// 200 response — composite with qualified names
+	var resp200 *ResponseAnnotation
+	for i := range op.Responses {
+		if op.Responses[i].Code == "200" {
+			resp200 = &op.Responses[i]
+			break
+		}
+	}
+	if resp200 == nil {
+		t.Fatal("missing 200 response")
+	}
+	if resp200.Type.Name != "models.BaseResponse" {
+		t.Errorf("200 resp type.Name = %q, want models.BaseResponse", resp200.Type.Name)
+	}
+	if len(resp200.Type.Overrides) != 1 || resp200.Type.Overrides[0].TypeExpr != "models.User" {
+		t.Errorf("200 resp overrides = %+v", resp200.Type.Overrides)
+	}
+
+	// 404 response
+	var resp404 *ResponseAnnotation
+	for i := range op.Responses {
+		if op.Responses[i].Code == "404" {
+			resp404 = &op.Responses[i]
+			break
+		}
+	}
+	if resp404 == nil {
+		t.Fatal("missing 404 response")
+	}
+	if resp404.Type.Name != "pkg.ErrorResponse" {
+		t.Errorf("404 resp type.Name = %q, want pkg.ErrorResponse", resp404.Type.Name)
+	}
+}

@@ -1,82 +1,106 @@
 {
   "components": {
     "schemas": {
-      "EventType": {
-        "description": "EventType describes the kind of lifecycle event for a pet.",
-        "enum": [
-          "created",
-          "updated",
-          "viewed",
-          "deleted"
-        ],
-        "type": "string",
-        "x-enum-varnames": [
-          "EventTypeCreated",
-          "EventTypeUpdated",
-          "EventTypeViewed",
-          "EventTypeDeleted"
-        ],
-        "x-enumdescriptions": [
-          "EventTypeCreated is emitted when a pet record is first inserted.",
-          "EventTypeUpdated is emitted when any field on a pet is changed.",
-          "EventTypeViewed is emitted when a pet detail page is fetched.",
-          "EventTypeDeleted is emitted when a pet record is removed."
-        ]
-      },
-      "PetEvent": {
-        "description": "PetEvent records a lifecycle event for a pet. Demonstrates third-party / stdlib struct field usage: - time.Time → OpenAPI string (format: date-time) - map[string]string → OpenAPI object with additionalProperties",
+      "SearchFilter": {
+        "description": "SearchFilter is intentionally defined inside the function body to demonstrate function-local struct support in swag3.",
         "type": "object",
         "properties": {
-          "id": {
-            "type": "integer",
-            "format": "int64",
-            "example": "1"
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
-          "pet_id": {
-            "type": "integer",
-            "format": "int64",
-            "example": "1"
+          "statuses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
-          "event_type": {
-            "$ref": "#/components/schemas/EventType"
-          },
-          "detail": {
-            "type": "string",
-            "example": "pet was created via API"
-          },
-          "occurred_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "metadata": {
-            "type": "object",
-            "additionalProperties": {
+          "tags": {
+            "type": "array",
+            "items": {
               "type": "string"
             }
           }
         }
       },
-      "OrderItem": {
-        "description": "OrderItem is a single line item inside an order.",
+      "ImportItem": {
+        "description": "ImportItem describes a single pet to import.",
         "type": "object",
         "required": [
-          "pet_id",
-          "quantity"
+          "name"
         ],
         "properties": {
-          "pet_id": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "PagedList": {
+        "description": "PagedList is the pagination payload carried inside BaseResponse.Data. List holds the concrete item slice for the current page.",
+        "type": "object",
+        "properties": {
+          "total": {
             "type": "integer",
             "format": "int64",
-            "example": "1"
+            "example": "42"
           },
-          "quantity": {
-            "type": "integer",
-            "format": "int32",
-            "example": "2"
-          },
-          "note": {
+          "list": {}
+        }
+      },
+      "PetStatus": {
+        "description": "PetStatus is the lifecycle state of a pet.",
+        "enum": [
+          "available",
+          "pending",
+          "sold"
+        ],
+        "type": "string",
+        "x-enum-varnames": [
+          "PetStatusAvailable",
+          "PetStatusPending",
+          "PetStatusSold"
+        ],
+        "x-enumdescriptions": [
+          "PetStatusAvailable means the pet is visible and can be adopted.",
+          "PetStatusPending means an adoption application is in progress.",
+          "PetStatusSold means the pet has been adopted and is no longer listed."
+        ]
+      },
+      "PetTag": {
+        "description": "PetTag is a free-form label for filtering pets.",
+        "type": "string"
+      },
+      "CreatePetRequest": {
+        "description": "CreatePetRequest is the request body for creating a pet.",
+        "type": "object",
+        "required": [
+          "name",
+          "status"
+        ],
+        "properties": {
+          "name": {
             "type": "string",
-            "example": "gift wrap please"
+            "example": "Buddy"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PetStatus"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PetTag"
+            }
           }
         }
       },
@@ -104,6 +128,30 @@
           "zip_code": {
             "type": "string",
             "example": "94105"
+          }
+        }
+      },
+      "OrderItem": {
+        "description": "OrderItem is a single line item inside an order.",
+        "type": "object",
+        "required": [
+          "pet_id",
+          "quantity"
+        ],
+        "properties": {
+          "pet_id": {
+            "type": "integer",
+            "format": "int64",
+            "example": "1"
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32",
+            "example": "2"
+          },
+          "note": {
+            "type": "string",
+            "example": "gift wrap please"
           }
         }
       },
@@ -139,6 +187,52 @@
           "placed_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "Category": {
+        "description": "Category is a self-referential tree node. Children []*Category creates a recursive schema; swag3 breaks the cycle by emitting a $ref on the second encounter of the same type.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": "1"
+          },
+          "name": {
+            "type": "string",
+            "example": "Dogs"
+          },
+          "parent_id": {
+            "type": "integer",
+            "format": "int64",
+            "example": "0",
+            "nullable": true
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Category"
+            }
+          }
+        }
+      },
+      "CreateCategoryRequest": {
+        "description": "CreateCategoryRequest is the body for POST /categories.",
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Dogs"
+          },
+          "parent_id": {
+            "type": "integer",
+            "format": "int64",
+            "example": "1",
+            "nullable": true
           }
         }
       },
@@ -210,178 +304,6 @@
           }
         }
       },
-      "Category": {
-        "description": "Category is a self-referential tree node. Children []*Category creates a recursive schema; swag3 breaks the cycle by emitting a $ref on the second encounter of the same type.",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "integer",
-            "format": "int64",
-            "example": "1"
-          },
-          "name": {
-            "type": "string",
-            "example": "Dogs"
-          },
-          "parent_id": {
-            "type": "integer",
-            "format": "int64",
-            "example": "0",
-            "nullable": true
-          },
-          "children": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Category"
-            }
-          }
-        }
-      },
-      "SearchFilter": {
-        "description": "SearchFilter is intentionally defined inside the function body to demonstrate function-local struct support in swag3.",
-        "type": "object",
-        "properties": {
-          "keywords": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "statuses": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "tags": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "PagedList": {
-        "description": "PagedList is the pagination payload carried inside BaseResponse.Data. List holds the concrete item slice for the current page.",
-        "type": "object",
-        "properties": {
-          "total": {
-            "type": "integer",
-            "format": "int64",
-            "example": "42"
-          },
-          "list": {}
-        }
-      },
-      "PetStatus": {
-        "description": "PetStatus is the lifecycle state of a pet.",
-        "enum": [
-          "available",
-          "pending",
-          "sold"
-        ],
-        "type": "string",
-        "x-enum-varnames": [
-          "PetStatusAvailable",
-          "PetStatusPending",
-          "PetStatusSold"
-        ],
-        "x-enumdescriptions": [
-          "PetStatusAvailable means the pet is visible and can be adopted.",
-          "PetStatusPending means an adoption application is in progress.",
-          "PetStatusSold means the pet has been adopted and is no longer listed."
-        ]
-      },
-      "PetTag": {
-        "description": "PetTag is a free-form label for filtering pets.",
-        "type": "string"
-      },
-      "CreatePetRequest": {
-        "description": "CreatePetRequest is the request body for creating a pet.",
-        "type": "object",
-        "required": [
-          "name",
-          "status"
-        ],
-        "properties": {
-          "name": {
-            "type": "string",
-            "example": "Buddy"
-          },
-          "status": {
-            "$ref": "#/components/schemas/PetStatus"
-          },
-          "tags": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/PetTag"
-            }
-          }
-        }
-      },
-      "UploadResult": {
-        "description": "UploadResult carries metadata about a successfully uploaded file. Returned in BaseResponse.Data after a multipart upload.",
-        "type": "object",
-        "properties": {
-          "filename": {
-            "type": "string",
-            "example": "avatar.jpg"
-          },
-          "size": {
-            "type": "integer",
-            "format": "int64",
-            "example": "204800"
-          },
-          "content_type": {
-            "type": "string",
-            "example": "image/jpeg"
-          },
-          "url": {
-            "type": "string",
-            "example": "/api/v1/pets/1/avatar"
-          }
-        }
-      },
-      "CreateCategoryRequest": {
-        "description": "CreateCategoryRequest is the body for POST /categories.",
-        "type": "object",
-        "required": [
-          "name"
-        ],
-        "properties": {
-          "name": {
-            "type": "string",
-            "example": "Dogs"
-          },
-          "parent_id": {
-            "type": "integer",
-            "format": "int64",
-            "example": "1",
-            "nullable": true
-          }
-        }
-      },
-      "ImportItem": {
-        "description": "ImportItem describes a single pet to import.",
-        "type": "object",
-        "required": [
-          "name"
-        ],
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          },
-          "tags": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
       "ImportRequest": {
         "description": "ImportRequest is the top-level body for the import endpoint.",
         "type": "object",
@@ -420,6 +342,61 @@
           "data": {}
         }
       },
+      "EventType": {
+        "description": "EventType describes the kind of lifecycle event for a pet.",
+        "enum": [
+          "created",
+          "updated",
+          "viewed",
+          "deleted"
+        ],
+        "type": "string",
+        "x-enum-varnames": [
+          "EventTypeCreated",
+          "EventTypeUpdated",
+          "EventTypeViewed",
+          "EventTypeDeleted"
+        ],
+        "x-enumdescriptions": [
+          "EventTypeCreated is emitted when a pet record is first inserted.",
+          "EventTypeUpdated is emitted when any field on a pet is changed.",
+          "EventTypeViewed is emitted when a pet detail page is fetched.",
+          "EventTypeDeleted is emitted when a pet record is removed."
+        ]
+      },
+      "PetEvent": {
+        "description": "PetEvent records a lifecycle event for a pet. Demonstrates third-party / stdlib struct field usage: - time.Time → OpenAPI string (format: date-time) - map[string]string → OpenAPI object with additionalProperties",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "example": "1"
+          },
+          "pet_id": {
+            "type": "integer",
+            "format": "int64",
+            "example": "1"
+          },
+          "event_type": {
+            "$ref": "#/components/schemas/EventType"
+          },
+          "detail": {
+            "type": "string",
+            "example": "pet was created via API"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "Pet": {
         "description": "Pet represents a pet in the store. Demonstrates stdlib time.Time fields mapped to OpenAPI string/date-time.",
         "type": "object",
@@ -455,6 +432,95 @@
             "nullable": true
           }
         }
+      },
+      "UploadResult": {
+        "description": "UploadResult carries metadata about a successfully uploaded file. Returned in BaseResponse.Data after a multipart upload.",
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string",
+            "example": "avatar.jpg"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "example": "204800"
+          },
+          "content_type": {
+            "type": "string",
+            "example": "image/jpeg"
+          },
+          "url": {
+            "type": "string",
+            "example": "/api/v1/pets/1/avatar"
+          }
+        }
+      },
+      "Priority": {
+        "description": "Priority is the scheduling priority of a task, ascending from lowest to highest. Values are derived from iota+1 so that zero is never a valid priority.",
+        "enum": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "format": "int32",
+        "type": "integer",
+        "x-enum-varnames": [
+          "PriorityLow",
+          "PriorityNormal",
+          "PriorityHigh",
+          "PriorityCritical"
+        ],
+        "x-enumdescriptions": [
+          "PriorityLow is the default, background-level priority.",
+          "PriorityNormal is the standard interactive priority.",
+          "PriorityHigh is for time-sensitive operations.",
+          "PriorityCritical is reserved for emergencies and alerts."
+        ]
+      },
+      "SortOrder": {
+        "description": "SortOrder controls the direction of a sort operation.",
+        "enum": [
+          -1,
+          0,
+          1
+        ],
+        "format": "int32",
+        "type": "integer",
+        "x-enum-varnames": [
+          "SortOrderDesc",
+          "SortOrderNone",
+          "SortOrderAsc"
+        ],
+        "x-enumdescriptions": [
+          "SortOrderDesc sorts results from largest to smallest.",
+          "SortOrderNone means no ordering guarantee.",
+          "SortOrderAsc sorts results from smallest to largest."
+        ]
+      },
+      "PageSize": {
+        "description": "PageSize is a predefined page size for list endpoints.",
+        "enum": [
+          10,
+          20,
+          50,
+          100
+        ],
+        "format": "int32",
+        "type": "integer",
+        "x-enum-varnames": [
+          "PageSizeSmall",
+          "PageSizeMedium",
+          "PageSizeLarge",
+          "PageSizeMax"
+        ],
+        "x-enumdescriptions": [
+          "PageSizeSmall returns 10 items per page.",
+          "PageSizeMedium returns 20 items per page.",
+          "PageSizeLarge returns 50 items per page.",
+          "PageSizeMax returns 100 items per page; the hard server-side cap."
+        ]
       }
     },
     "securitySchemes": {

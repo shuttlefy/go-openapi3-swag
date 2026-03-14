@@ -2,6 +2,7 @@ package parser
 
 type RawAST struct {
 	Package     string
+	Packages    []string // all distinct package names seen across scanned files
 	Functions   []RawFunc
 	Structs     []RawStruct
 	TypeAliases []RawTypeAlias
@@ -19,11 +20,12 @@ type RawFunc struct {
 }
 
 type RawStruct struct {
-	Name      string
-	FilePath  string
-	FuncScope string // enclosing function name; empty for top-level
-	Fields    []RawField
-	Comments  []string
+	Name        string
+	PackageName string // Go package name of the file that declares this struct
+	FilePath    string
+	FuncScope   string // enclosing function name; empty for top-level
+	Fields      []RawField
+	Comments    []string
 }
 
 type RawField struct {
@@ -60,18 +62,20 @@ type RawParam struct {
 }
 
 type RawTypeAlias struct {
-	Name       string
-	Underlying string
-	FilePath   string
-	FuncScope  string
-	Comments   []string
+	Name        string
+	PackageName string
+	Underlying  string
+	FilePath    string
+	FuncScope   string
+	Comments    []string
 }
 
 type RawConst struct {
-	Name      string
-	TypeName  string
-	Value     string
-	FilePath  string
-	FuncScope string
-	Comments  []string
+	Name        string
+	PackageName string
+	TypeName    string
+	Value       string
+	FilePath    string
+	FuncScope   string
+	Comments    []string
 }

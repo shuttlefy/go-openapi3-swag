@@ -31,6 +31,14 @@ func (b *Builder) Build(result *extractor.ExtractResult, rawAST *parser.RawAST) 
 
 	b.warnings = nil
 
+	// Phase 0: set primary package and register all scanned package names.
+	// The primary package is used to decide whether a type's schema name is
+	// kept as a short name ("Pet") or qualified ("bo.StockItem").
+	sb.SetPrimaryPackage(rawAST.Package)
+	for _, pkg := range rawAST.Packages {
+		sb.RegisterPackage(pkg)
+	}
+
 	// Phase 1a: register top-level (non-scoped) structs.
 	for i := range rawAST.Structs {
 		if rawAST.Structs[i].FuncScope == "" {
