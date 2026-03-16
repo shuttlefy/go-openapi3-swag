@@ -807,6 +807,106 @@ func TestBuilder_FuncLocalStructRegistered(t *testing.T) {
 	}
 }
 
+// TestBuilder_FuncLocalStructThreePartRef verifies that annotations using the
+// three-part form pkg.FuncScope.TypeName (e.g.
+// controller.SearchParamTemplateListController.Request) correctly resolve to
+// the function-local struct and produce the expected $ref.
+func TestBuilder_FuncLocalStructThreePartRef(t *testing.T) {
+	rawAST := &parser.RawAST{
+		Package:  "controller",
+		Packages: []string{"controller"},
+		Structs: []parser.RawStruct{
+			{
+				// function-local type inside SearchParamTemplateListController
+				Name:        "Request",
+				PackageName: "controller",
+				FuncScope:   "SearchParamTemplateListController",
+				Fields: []parser.RawField{
+					{Name: "ProviderCode", TypeName: "string", JSONName: "provider_code", Required: true},
+					{Name: "ProductCode", TypeName: "string", JSONName: "product_code", Required: true},
+				},
+			},
+			{
+				Name:        "ParamTemplateWithCloudTemplateIDItem",
+				PackageName: "controller",
+				FuncScope:   "SearchParamTemplateListController",
+				Fields: []parser.RawField{
+					{Name: "Name", TypeName: "string", JSONName: "name"},
+					{Name: "TemplateID", TypeName: "string", JSONName: "cloud_template_id"},
+				},
+			},
+		},
+	}
+
+	result := &extractor.ExtractResult{
+		Global: extractor.GlobalAnnotation{Title: "API", Version: "1"},
+		Operations: []extractor.OperationAnnotation{
+			{
+				FuncName: "SearchParamTemplateListController",
+				Route:    extractor.RouteInfo{Method: "get", Path: "/api/v1/param_template/search"},
+				Params: []extractor.ParamAnnotation{
+					// three-part pkg.FuncScope.Type reference
+					{Name: "req", In: "query", TypeName: "controller.SearchParamTemplateListController.Request"},
+				},
+				Responses: []extractor.ResponseAnnotation{
+					{
+						Code: "200",
+						Type: extractor.TypeExpr{
+							Name: "controller.SearchParamTemplateListController.ParamTemplateWithCloudTemplateIDItem",
+						},
+						IsArray: true,
+					},
+				},
+			},
+		},
+	}
+
+	b := NewBuilder()
+	doc, err := b.Build(result, rawAST)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	warns := b.Warnings()
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+
+	// Both function-local structs must appear in components.
+	if doc.Components.Schemas.Get("Request") == nil {
+		t.Error("Request schema missing from components")
+	}
+	if doc.Components.Schemas.Get("ParamTemplateWithCloudTemplateIDItem") == nil {
+		t.Error("ParamTemplateWithCloudTemplateIDItem schema missing from components")
+	}
+
+	// The query param must carry a $ref to Request.
+	op := doc.Paths.Get("/api/v1/param_template/search").Get
+	if op == nil || len(op.Parameters) == 0 {
+		t.Fatal("GET operation or parameters missing")
+	}
+	paramRef := op.Parameters[0].Schema.Ref
+	if paramRef != "#/components/schemas/Request" {
+		t.Errorf("param schema $ref = %q, want #/components/schemas/Request", paramRef)
+	}
+
+	// The 200 response must reference ParamTemplateWithCloudTemplateIDItem.
+	resp := op.Responses.Get("200")
+	if resp == nil {
+		t.Fatal("200 response missing")
+	}
+	mt := resp.Content.Get("application/json")
+	if mt == nil {
+		t.Fatal("application/json media type missing")
+	}
+	if mt.Schema.Type != "array" {
+		t.Errorf("response schema type = %q, want array", mt.Schema.Type)
+	}
+	if mt.Schema.Items == nil || mt.Schema.Items.Ref != "#/components/schemas/ParamTemplateWithCloudTemplateIDItem" {
+		t.Errorf("response items $ref = %q, want #/components/schemas/ParamTemplateWithCloudTemplateIDItem", mt.Schema.Items.Ref)
+	}
+}
+
 func TestBuilder_EmptyProject(t *testing.T) {
 	rawAST := &parser.RawAST{}
 	result := &extractor.ExtractResult{

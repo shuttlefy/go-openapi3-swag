@@ -38,12 +38,18 @@ func (ob *OperationBuilder) buildParameters(params []extractor.ParamAnnotation) 
 
 	var out []spec.Parameter
 	for _, p := range params {
-		schema := ParamTypeSchema(p.TypeName, p.Format)
-		if p.Default != "" {
-			schema.Default = tryParseDefault(p.Default)
-		}
-		if len(p.Enums) > 0 {
-			schema.Enum = toEnumInterfaces(p.Enums)
+		var schema spec.Schema
+		if _, isPrimitive := paramTypePrimitives[p.TypeName]; isPrimitive {
+			schema = ParamTypeSchema(p.TypeName, p.Format)
+			if p.Default != "" {
+				schema.Default = tryParseDefault(p.Default)
+			}
+			if len(p.Enums) > 0 {
+				schema.Enum = toEnumInterfaces(p.Enums)
+			}
+		} else {
+			// Non-primitive: resolve as a struct/alias schema reference.
+			schema = *ob.schema.SchemaForType(p.TypeName)
 		}
 
 		param := spec.Parameter{

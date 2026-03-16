@@ -77,10 +77,22 @@ func (sb *SchemaBuilder) UnknownTypeNames() []string {
 // The struct is looked up internally by its short name; in components/schemas
 // it is emitted under the fully-qualified name when it belongs to a
 // sub-package (e.g. "bo.StockItem" for a struct in package "bo").
+//
+// For function-local structs (FuncScope != "") the scoped key "FuncScope.TypeName"
+// is registered as an alias pointing to the same schema.  This lets annotations
+// use the three-part form pkg.FuncScope.TypeName (e.g.
+// controller.SearchParamTemplateListController.Request) to unambiguously
+// address a type defined inside a specific function body.
 func (sb *SchemaBuilder) RegisterStruct(s *parser.RawStruct) {
 	schemaName := sb.schemaNameFor(s.Name, s.PackageName)
 	sb.structs[s.Name] = s
 	sb.resolver.RegisterWithSchemaName(s.Name, schemaName)
+
+	if s.FuncScope != "" {
+		scopedKey := s.FuncScope + "." + s.Name
+		sb.structs[scopedKey] = s
+		sb.resolver.RegisterWithSchemaName(scopedKey, schemaName)
+	}
 }
 
 // RegisterTypeAlias registers a type alias (e.g. type Status string) so that
@@ -325,23 +337,21 @@ func (sb *SchemaBuilder) goTypeToSchema(typeName string) *spec.Schema {
 		return sb.resolver.RefSchema(typeName)
 	}
 
-	// Dotted-name resolution: "pkg.Type" where pkg must be a known scanned
-	// package name (a single identifier with no dots) and Type must be a
-	// registered schema name (also no dots).
+	// Dotted-name resolution: "pkg.Type" or "pkg.FuncScope.Type" where pkg
+	// must be a known scanned package name.
 	//
 	// Rules:
-	//   - Only a single dot is allowed: "bo.Order" is valid; "sql.ddlx.Order"
-	//     is not, because "sql.ddlx" cannot be a Go identifier/package name.
-	//   - The package prefix must have been registered via RegisterPackage,
-	//     i.e. it must correspond to an actual scanned source directory.
-	//   - Silent last-segment stripping is intentionally NOT performed: if the
-	//     package is unknown or the name has multiple dots, the reference is
-	//     recorded as an unknown type and reported as a diagnostic.
+	//   - Two-part "pkg.Type": typePart has no dots (e.g. "bo.Order").
+	//   - Three-part "pkg.FuncScope.Type": typePart has exactly one dot
+	//     (e.g. "controller.SearchHandler.Request"); the scoped key
+	//     "FuncScope.Type" must have been registered via RegisterStruct.
+	//   - Names with more than two dots are rejected to avoid silent
+	//     mis-resolution of stdlib-style paths like "sql.ddlx.Row".
+	//   - The package prefix must have been registered via RegisterPackage.
 	if dotIdx := strings.Index(typeName, "."); dotIdx >= 0 {
 		pkgName := typeName[:dotIdx]
 		typePart := typeName[dotIdx+1:]
-		// Reject multi-dot names ("sql.ddlx.Order" → typePart still has a dot).
-		if !strings.Contains(typePart, ".") && sb.knownPackages[pkgName] {
+		if sb.knownPackages[pkgName] && strings.Count(typePart, ".") <= 1 {
 			if sb.resolver.IsRegistered(typePart) {
 				sb.getOrBuild(typePart)
 				return sb.resolver.RefSchema(typePart)
@@ -352,6 +362,16 @@ func (sb *SchemaBuilder) goTypeToSchema(typeName string) *spec.Schema {
 	// Silently skip known non-serializable stdlib packages (sync, atomic, etc.).
 	if isSkippedType(typeName) {
 		return &spec.Schema{Type: "object"}
+	}
+
+	// Generic type instantiation: e.g. GrayList[string] → resolve base type GrayList.
+	// OpenAPI has no native generic support; we map to the base type's schema.
+	if bracketIdx := strings.Index(typeName, "["); bracketIdx > 0 {
+		baseName := typeName[:bracketIdx]
+		if sb.resolver.IsRegistered(baseName) {
+			sb.getOrBuild(baseName)
+			return sb.resolver.RefSchema(baseName)
+		}
 	}
 
 	// Record unresolved reference for diagnostic reporting.

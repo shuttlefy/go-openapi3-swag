@@ -571,6 +571,37 @@ func TestSchemaBuilder_SelfRef(t *testing.T) {
 	}
 }
 
+func TestSchemaBuilder_GenericTypeInstantiation(t *testing.T) {
+	resolver := NewResolver()
+	sb := NewSchemaBuilder(resolver)
+
+	// GrayList is a registered generic base type.
+	sb.RegisterStruct(&parser.RawStruct{
+		Name:   "GrayList",
+		Fields: []parser.RawField{{Name: "Items", TypeName: "[]string", JSONName: "items"}},
+	})
+	// Order has a field whose type is GrayList[string] — a generic instantiation.
+	sb.RegisterStruct(&parser.RawStruct{
+		Name:   "Order",
+		Fields: []parser.RawField{{Name: "List", TypeName: "GrayList[string]", JSONName: "list"}},
+	})
+	sb.BuildAll()
+
+	// No unknown-type warning should be emitted.
+	if unknown := sb.UnknownTypeNames(); len(unknown) != 0 {
+		t.Errorf("unexpected unknown types: %v", unknown)
+	}
+
+	order := sb.Schemas().Get("Order")
+	listProp := order.Properties.Get("list")
+	if listProp == nil {
+		t.Fatal("missing list property")
+	}
+	if listProp.Ref != "#/components/schemas/GrayList" {
+		t.Errorf("list.$ref = %q, want #/components/schemas/GrayList", listProp.Ref)
+	}
+}
+
 func TestSchemaBuilder_UnknownType(t *testing.T) {
 	resolver := NewResolver()
 	sb := NewSchemaBuilder(resolver)

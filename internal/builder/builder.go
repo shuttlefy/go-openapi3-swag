@@ -92,9 +92,8 @@ func (b *Builder) Build(result *extractor.ExtractResult, rawAST *parser.RawAST) 
 	}
 
 	doc := &spec.OpenAPI{
-		OpenAPI: "3.0.3",
+		OpenAPI: "3.2.0",
 	}
-
 	// Phase 3: Info, Servers, ExternalDocs
 	doc.Info = buildInfo(result.Global)
 	doc.Servers = buildServers(result.Global)

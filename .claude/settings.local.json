@@ -18,7 +18,13 @@
       "Bash(go build ./... 2>&1)",
       "Bash(go test ./internal/builder/... -v -run \"SubPackage|PrimaryPackage|DottedType_Known\" 2>&1)",
       "Bash(go run ./cmd/swag3/ -dir examples/petstore -title \"Pet Store API\" -version \"1.0.0\" -output examples/petstore/openapi.json 2>&1 && echo \"DONE\")",
-      "Bash(go run ./cmd/swag3/ -dir examples/petstore -title \"Pet Store API\" -version \"1.0.0\" -output examples/petstore/openapi.json 2>&1)"
+      "Bash(go run ./cmd/swag3/ -dir examples/petstore -title \"Pet Store API\" -version \"1.0.0\" -output examples/petstore/openapi.json 2>&1)",
+      "Bash(go test ./internal/builder/... -run TestSchemaBuilder_GenericTypeInstantiation -v 2>&1)",
+      "Bash(go test ./internal/builder/... 2>&1)",
+      "Bash(go test ./internal/builder/... -run TestBuilder_FuncLocal -v 2>&1)",
+      "Bash(go test ./... -run TestEndToEnd_PetStore_JSON -update 2>&1 | head -20)",
+      "Bash(go test ./cmd/swag3/... -run TestEndToEnd_PetStore_JSON -v 2>&1 | grep -A 5 \"differs\\\\|FAIL\\\\|PASS\" | head -30)",
+      "Bash(git stash && go test ./cmd/swag3/... -run TestEndToEnd_PetStore_YAML -v 2>&1 | tail -5)"
     ]
   }
 }
