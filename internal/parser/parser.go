@@ -10,11 +10,13 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/shuttlefy/go-openapi3-swag/config"
 )
 
 type GoParser struct{}
 
-func (p *GoParser) Parse(dirs []string) (*RawAST, error) {
+func (p *GoParser) Parse(dirs config.StringSlice) (*RawAST, error) {
 	result := &RawAST{}
 	fset := token.NewFileSet()
 
@@ -321,7 +323,6 @@ func evaluateConstExpr(expr ast.Expr, iotaVal int) string {
 		return fmt.Sprintf("%T", expr)
 	}
 }
-
 
 func extractFunc(fset *token.FileSet, filePath string, fn *ast.FuncDecl) RawFunc {
 	f := RawFunc{

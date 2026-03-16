@@ -195,6 +195,9 @@ func (sb *SchemaBuilder) buildStruct(raw *parser.RawStruct) *spec.Schema {
 		if propName == "-" {
 			continue
 		}
+		if isSkippedType(f.TypeName) {
+			continue
+		}
 		propSchema := sb.buildFieldSchema(f)
 		props.Set(propName, propSchema)
 		if f.Required {
@@ -346,9 +349,30 @@ func (sb *SchemaBuilder) goTypeToSchema(typeName string) *spec.Schema {
 		}
 	}
 
+	// Silently skip known non-serializable stdlib packages (sync, atomic, etc.).
+	if isSkippedType(typeName) {
+		return &spec.Schema{Type: "object"}
+	}
+
 	// Record unresolved reference for diagnostic reporting.
 	sb.unknownTypes[typeName] = true
 	return &spec.Schema{Type: "object"}
+}
+
+// skipPackages lists stdlib packages whose types are not JSON-serializable and
+// should be silently ignored when encountered as struct fields.
+var skipPackages = map[string]bool{
+	"sync":   true,
+	"atomic": true,
+}
+
+// isSkippedType reports whether typeName belongs to a non-serializable stdlib package.
+func isSkippedType(typeName string) bool {
+	base := strings.TrimPrefix(typeName, "*")
+	if dotIdx := strings.Index(base, "."); dotIdx >= 0 {
+		return skipPackages[base[:dotIdx]]
+	}
+	return false
 }
 
 // buildCompositeSchema builds an allOf schema from a TypeExpr with field overrides.

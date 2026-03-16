@@ -258,6 +258,9 @@ func (e *GoExtractor) extractOperations(ast *parser.RawAST, result *ExtractResul
 		op := e.parseOperation(fn)
 		if op == nil {
 			if hasSwagAnnotations(fn) {
+				if fn.Name == "main" {
+					continue
+				}
 				result.Diagnostics = append(result.Diagnostics, Diagnostic{
 					Level:    DiagWarn,
 					FilePath: fn.FilePath,

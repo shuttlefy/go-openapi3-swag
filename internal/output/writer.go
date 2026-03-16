@@ -9,10 +9,20 @@ import (
 	spec3 "github.com/shuttlefy/go-openapi3-spec"
 )
 
-func Write(doc *spec3.OpenAPI, format, path string) error {
+func getFormat(path string) string {
+	switch filepath.Ext(path) {
+	case ".json":
+		return "json"
+	case ".yaml":
+		return "yaml"
+	}
+	return "json"
+}
+
+func Write(doc *spec3.OpenAPI, path string) error {
 	var data []byte
 	var err error
-
+	format := getFormat(path)
 	switch format {
 	case "json":
 		data, err = json.MarshalIndent(doc, "", "  ")

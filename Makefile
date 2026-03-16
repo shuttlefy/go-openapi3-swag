@@ -13,6 +13,11 @@ SPEC_OUT     := openapi.json
 EXAMPLE_SPEC := examples/petstore/openapi.json
 PORT         ?= 8088
 
+VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+DIST_DIR     := dist
+LDFLAGS      := -s -w -X main.version=$(VERSION)
+PLATFORMS    := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
+
 # Metadata used when generating a spec from examples/petstore (which carries
 # operation annotations on handler methods but no global swaggerInfo function).
 EXAMPLE_TITLE   ?= Pet Store API
@@ -64,8 +69,6 @@ gen-yaml: ## Generate openapi.yaml from testdata/petstore annotations
 gen-example: ## Generate openapi.json from examples/petstore handler annotations
 	go run $(CLI) \
 		-dir $(EXAMPLE_DIR) \
-		-title "$(EXAMPLE_TITLE)" \
-		-version "$(EXAMPLE_VERSION)" \
 		-output $(EXAMPLE_SPEC)
 	@echo "✓ spec written to $(EXAMPLE_SPEC)"
 
@@ -147,11 +150,47 @@ fmt-check: ## Check formatting without modifying files (CI-safe)
 	fi
 	@echo "✓ all files are formatted"
 
+# ── Package / Release ─────────────────────────────────────────────────────────
+
+.PHONY: dist
+dist: ## Cross-compile swag3 for all platforms → ./dist/
+	@mkdir -p $(DIST_DIR)
+	@$(foreach platform,$(PLATFORMS), \
+		$(eval OS   := $(word 1,$(subst /, ,$(platform)))) \
+		$(eval ARCH := $(word 2,$(subst /, ,$(platform)))) \
+		$(eval EXT  := $(if $(filter windows,$(OS)),.exe,)) \
+		$(eval OUT  := $(DIST_DIR)/swag3-$(VERSION)-$(OS)-$(ARCH)$(EXT)) \
+		echo "→ building $(OS)/$(ARCH)"; \
+		GOOS=$(OS) GOARCH=$(ARCH) go build -ldflags "$(LDFLAGS)" -o $(OUT) $(CLI); \
+	)
+	@echo "✓ binaries written to $(DIST_DIR)/"
+
+.PHONY: package
+package: dist ## Build and archive all platform binaries → ./dist/*.tar.gz / .zip
+	@cd $(DIST_DIR) && \
+	for f in swag3-$(VERSION)-linux-* swag3-$(VERSION)-darwin-*; do \
+		[ -f "$$f" ] || continue; \
+		tar czf "$$f.tar.gz" "$$f" && rm -f "$$f"; \
+		echo "  packed $$f.tar.gz"; \
+	done && \
+	for f in swag3-$(VERSION)-windows-*.exe; do \
+		[ -f "$$f" ] || continue; \
+		zip "$$f.zip" "$$f" && rm -f "$$f"; \
+		echo "  packed $$f.zip"; \
+	done
+	@echo "✓ archives written to $(DIST_DIR)/"
+
+.PHONY: release-dry
+release-dry: ## Show what would be packaged (no files written)
+	@echo "Version : $(VERSION)"
+	@echo "Targets : $(PLATFORMS)"
+	@echo "Output  : $(DIST_DIR)/"
+
 # ── Clean ─────────────────────────────────────────────────────────────────────
 
 .PHONY: clean
 clean: ## Remove build artifacts and generated files
-	rm -rf bin/
+	rm -rf bin/ $(DIST_DIR)/
 	rm -f coverage.out
 	rm -f openapi.yaml
 	rm -f $(EXAMPLE_SPEC)

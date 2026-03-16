@@ -955,6 +955,36 @@ func (h *handler) importPets(c *gin.Context) {
 
 // ── Server bootstrap ──────────────────────────────────────────────────────────
 
+// @title Pet Store API
+// @version 2.0.0
+// @description A sample pet store server.
+// @termsOfService https://example.com/terms
+//
+// @contact.name API Support
+// @contact.email support@example.com
+// @contact.url https://www.example.com/support
+//
+// @license.name Apache 2.0
+// @license.url https://www.apache.org/licenses/LICENSE-2.0.html
+//
+// @server https://api.petstore.com "Production"
+// @server http://localhost:8080 "Development"
+//
+// @externalDocs.url https://example.com/docs
+// @externalDocs.description Find out more
+//
+// @tag pets "Everything about your Pets"
+// @tag users "User operations"
+//
+// @securityDefinitions.apikey ApiKeyAuth
+// @securityDefinitions.apikey.in header
+// @securityDefinitions.apikey.name X-API-Key
+//
+// @securityDefinitions.oauth2.authorizationCode OAuth2
+// @securityDefinitions.oauth2.authorizationCode.authorizationUrl https://example.com/oauth/authorize
+// @securityDefinitions.oauth2.authorizationCode.tokenUrl https://example.com/oauth/token
+// @securityDefinitions.oauth2.authorizationCode.scope.read "Read access"
+// @securityDefinitions.oauth2.authorizationCode.scope.write "Write access"
 func main() {
 	r := gin.Default()
 	r.MaxMultipartMemory = 8 << 20 // 8 MiB max upload size
