@@ -29,3 +29,4 @@ Thumbs.db
 # Generated output
 openapi.json
 openapi.yaml
+dist/
