@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"fmt"
 	"strings"
 
 	spec3 "github.com/shuttlefy/go-openapi3-spec"
@@ -40,7 +41,16 @@ func (ob *OperationBuilder) Build(
 		if inBody(p.In) {
 			continue
 		}
-		oper.Parameters = append(oper.Parameters, ob.buildParam(p, file))
+		if p.Name == "" {
+			// 匿名打散：将 struct 字段展开为同位置的独立参数
+			expanded, err := ob.expandStructParams(p, file)
+			if err != nil {
+				return nil, err
+			}
+			oper.Parameters = append(oper.Parameters, expanded...)
+		} else {
+			oper.Parameters = append(oper.Parameters, ob.buildParam(p, file))
+		}
 	}
 
 	// 请求体
@@ -82,6 +92,49 @@ func (ob *OperationBuilder) buildParam(p extractor.ParamAnnotation, file *parser
 		param.Schema = *schema
 	}
 	return param
+}
+
+// expandStructParams 将 struct 类型参数展开为多个独立 Parameter（每个字段一条）。
+// 支持嵌入字段递归展开；跳过 json:"-" 字段。
+func (ob *OperationBuilder) expandStructParams(p extractor.ParamAnnotation, file *parser.RawFile) ([]spec3.Parameter, error) {
+	rawStruct, structFile := ob.schema.resolver.FindRawStruct(p.TypeName, file)
+	if rawStruct == nil {
+		return nil, fmt.Errorf("@Param: 无法解析 struct 类型 %q 用于参数打散", p.TypeName)
+	}
+
+	in := strings.ToLower(p.In)
+	var params []spec3.Parameter
+
+	for _, field := range rawStruct.Fields {
+		if field.Embedded {
+			// 递归展开嵌入 struct
+			typeName := strings.TrimPrefix(field.TypeName, "*")
+			sub, err := ob.expandStructParams(extractor.ParamAnnotation{In: p.In, TypeName: typeName}, structFile)
+			if err == nil {
+				params = append(params, sub...)
+			}
+			continue
+		}
+
+		jsonName, schema, isRequired, skip := ob.schema.buildFieldSchema(field, structFile, nil)
+		if skip || schema == nil {
+			continue
+		}
+
+		// description 置于 parameter 层，从 schema 移除以避免重复
+		desc := schema.Description
+		schemaCopy := *schema
+		schemaCopy.Description = ""
+
+		params = append(params, spec3.Parameter{
+			Name:        jsonName,
+			In:          in,
+			Required:    isRequired,
+			Description: strPtr(desc),
+			Schema:      schemaCopy,
+		})
+	}
+	return params, nil
 }
 
 func (ob *OperationBuilder) resolveParamSchema(typeName, format string, file *parser.RawFile) *spec3.Schema {

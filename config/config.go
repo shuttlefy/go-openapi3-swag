@@ -32,7 +32,7 @@ func ParseFlags() *Config {
 	flag.Var(&cfg.InputDirs, "dirs", "directories to scan for Go source files (comma-separated or repeatable)")
 	flag.StringVar(&cfg.OutputFile, "output", "./docs/openapi.json", "output file path (*.json or *.yaml)")
 	flag.IntVar(&cfg.ParseDepth, "depth", -1, "directory recursion depth: 0=root only, N=N levels, -1=unlimited")
-	flag.StringVar(&cfg.OpenAPIVer, "openapi-ver", "3.0.3", "OpenAPI version: 3.0.3 | 3.1.0")
+	flag.StringVar(&cfg.OpenAPIVer, "openapi-ver", "3.2.0", "OpenAPI version: 3.0.3 | 3.1.0 | 3.2.0")
 	flag.StringVar(&cfg.GoMod, "gomod", "go.mod", "path to go.mod file")
 	flag.Parse()
 

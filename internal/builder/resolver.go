@@ -398,6 +398,79 @@ func (r *Resolver) lookupAndBuild(key SchemaKey, pkg, typeName, funcName string,
 	return nil
 }
 
+// FindRawStruct 按类型字符串在已加载文件中查找 RawStruct。
+// 返回 (struct, 所在文件)；未找到时两者均为 nil。
+// 支持三种格式：
+//   - "TypeName"               → 使用 file 的包名，查包级 struct
+//   - "pkg.TypeName"           → 查包级 struct
+//   - "pkg.FuncName.TypeName"  → 查函数局部 struct
+func (r *Resolver) FindRawStruct(typeStr string, file *parser.RawFile) (*parser.RawStruct, *parser.RawFile) {
+	typeStr = strings.TrimSpace(typeStr)
+	if typeStr == "" {
+		return nil, nil
+	}
+
+	parts := strings.SplitN(typeStr, ".", 3)
+	switch len(parts) {
+	case 1:
+		// "TypeName" — 当前包
+		if file == nil {
+			return nil, nil
+		}
+		return r.findPackageStruct(file.Package, parts[0])
+
+	case 2:
+		// "pkg.TypeName" — 包级 struct
+		pkg := r.resolveQualifier(parts[0], file)
+		if pkg == "" {
+			return nil, nil
+		}
+		return r.findPackageStruct(pkg, parts[1])
+
+	case 3:
+		// "pkg.FuncName.TypeName" — 函数局部 struct
+		pkg := r.resolveQualifier(parts[0], file)
+		if pkg == "" {
+			return nil, nil
+		}
+		funcName, typeName := parts[1], parts[2]
+		for i := range r.files {
+			rf := r.files[i]
+			if rf.Package != pkg {
+				continue
+			}
+			for _, fn := range rf.Functions {
+				if fn.Name != funcName {
+					continue
+				}
+				for j := range fn.LocalStructs {
+					if fn.LocalStructs[j].Name == typeName {
+						return &fn.LocalStructs[j], rf
+					}
+				}
+			}
+		}
+		return nil, nil
+	}
+	return nil, nil
+}
+
+// findPackageStruct 在已加载文件中按包名和类型名查找包级 struct。
+func (r *Resolver) findPackageStruct(pkg, typeName string) (*parser.RawStruct, *parser.RawFile) {
+	for i := range r.files {
+		rf := r.files[i]
+		if rf.Package != pkg {
+			continue
+		}
+		for j := range rf.Structs {
+			if rf.Structs[j].Name == typeName {
+				return &rf.Structs[j], rf
+			}
+		}
+	}
+	return nil, nil
+}
+
 // findImportPath 从文件的 import 声明中根据包名找到完整 import path。
 // 查找优先级与 resolveQualifier 一致：
 //  1. Alias 精确匹配（别名优先）

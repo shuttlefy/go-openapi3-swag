@@ -250,7 +250,7 @@ OAuth2 需要指定流类型。支持的流类型：
 
 | 字段 | 说明 | 可选值 |
 |------|------|--------|
-| 名称 | 参数名 | 任意字符串 |
+| 名称 | 参数名 | 任意字符串；写 `""` 表示打散 struct（见下） |
 | 位置 | 参数位置 | `path`, `query`, `header`, `cookie`, `body`, `formData` |
 | 类型 | 数据类型 | 原始类型：`string`, `integer`, `int`, `number`, `boolean`, `file`；或模型引用：`包名.类型名` |
 | 必填 | 是否必填 | `true`, `false` |
@@ -266,6 +266,47 @@ OAuth2 需要指定流类型。支持的流类型：
 // @Param limit      query  integer       false int32 "Page size"
 // @Param created_at query  string        false date-time "Creation date"
 // @Param filter     query  models.Filter false "Filter object"
+```
+
+### Struct 打散参数
+
+当名称写为 `""` 时，工具会将 struct 的每个字段展开为独立的同位置参数，适用于将请求过滤条件、分页参数等集中定义在一个 struct 中的场景。
+
+```
+// @Param "" 位置 包名.StructType 必填 "描述"
+```
+
+**规则：**
+- 名称必须为 `""`，类型必须是 struct 引用（`包名.TypeName`）；原始类型使用 `""` 名称属于错误。
+- 仅支持 `query`、`header`、`cookie` 位置（非 `body` / `formData`）。
+- struct 的字段约束（`json` 名称、`binding:"required"`、`format`、`enums`、`example`、`minimum`/`maximum` 等 struct tag）全部保留。
+- `json:"-"` 字段自动跳过。
+- 嵌入字段（embedded struct）递归展开。
+
+**示例：**
+
+```go
+// models/query.go
+type BookQuery struct {
+    Category string `json:"category" enums:"fiction,science,history"`
+    InStock  bool   `json:"in_stock"`
+    Page     int    `json:"page"  minimum:"1" default:"1"`
+    Size     int    `json:"size"  minimum:"1" maximum:"100" default:"20"`
+}
+```
+
+```go
+// @Param "" query models.BookQuery false "查询条件"
+// @Router /books [get]
+```
+
+等价于逐一声明：
+
+```go
+// @Param category query string  false "..."
+// @Param in_stock query boolean false "..."
+// @Param page     query integer false "..."
+// @Param size     query integer false "..."
 ```
 
 ### 请求体（Request Body）

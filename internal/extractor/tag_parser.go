@@ -96,16 +96,31 @@ func parseMIMETypes(value string) []string {
 //
 // 格式：name in type required ["format"] "description"
 // 描述必须用双引号括起（description 可选）。
+//
+// 特殊：name 为 `""` 时表示 struct 打散参数——将 type 对应的 struct 字段
+// 全部展开为独立的同位置参数（仅支持非 body/formData 位置）。
+// 此时 type 必须是 struct 类型；原始类型（string/integer 等）使用打散语法属于错误。
 func parseParamTag(value string) (ParamAnnotation, error) {
 	desc, rest := extractLastQuoted(value)
 	fields := strings.Fields(rest)
 	if len(fields) < 4 {
 		return ParamAnnotation{}, fmt.Errorf("@Param 至少需要 4 个字段（name in type required），got %q", value)
 	}
+
+	name := fields[0]
+	// `""` 表示匿名打散，统一转为空字符串
+	if name == `""` {
+		name = ""
+	}
+	typeName := fields[2]
+	if name == "" && isParamPrimitive(typeName) {
+		return ParamAnnotation{}, fmt.Errorf("@Param: 原始类型 %q 必须提供参数名", typeName)
+	}
+
 	p := ParamAnnotation{
-		Name:        fields[0],
+		Name:        name,
 		In:          strings.ToLower(fields[1]),
-		TypeName:    fields[2],
+		TypeName:    typeName,
 		Required:    strings.ToLower(fields[3]) == "true",
 		Description: desc,
 	}
@@ -113,6 +128,18 @@ func parseParamTag(value string) (ParamAnnotation, error) {
 		p.Format = fields[4]
 	}
 	return p, nil
+}
+
+// isParamPrimitive 判断类型名是否为原始类型（注解层面的类型词汇）。
+func isParamPrimitive(t string) bool {
+	switch strings.ToLower(t) {
+	case "string", "integer", "int", "number", "boolean", "bool", "file",
+		"int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64",
+		"float32", "float64", "byte", "rune":
+		return true
+	}
+	return false
 }
 
 // ── @Success / @Failure ───────────────────────────────────────────────────────

@@ -25,16 +25,15 @@ func (e *GoExtractor) Extract(files []*parser.RawFile) (*ExtractResult, error) {
 			}
 			tags, plain := parseCommentLines(fn.Comments)
 
-			// 应用全局标签（@title、@version 等）
-			applyGlobalTags(tags, &result.Global, secCtx)
-
-			// 若包含 @Router，构建操作注解
+			// 仅在非操作函数（无 @Router）时应用全局标签，避免操作级 @description 污染 info.description
 			if route, ok := findRouterTag(tags); ok {
 				op, err := buildOperation(fn, tags, plain, route)
 				if err != nil {
 					return nil, fmt.Errorf("%s:%d: %w", rf.FilePath, fn.Line, err)
 				}
 				result.Operations = append(result.Operations, op)
+			} else {
+				applyGlobalTags(tags, &result.Global, secCtx)
 			}
 		}
 	}
