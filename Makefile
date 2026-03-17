@@ -6,22 +6,14 @@
 
 MODULE       := github.com/shuttlefy/go-openapi3-swag
 CLI          := ./cmd/swag3
-EXAMPLE      := ./examples/petstore
-EXAMPLE_DIR  := examples/petstore
-SPEC_DIR     := testdata/petstore
-SPEC_OUT     := openapi.json
-EXAMPLE_SPEC := examples/petstore/openapi.json
-PORT         ?= 8088
+EXAMPLE_DIR  := examples/bookstore
+EXAMPLE_SPEC := $(EXAMPLE_DIR)/docs/openapi.json
+PORT         ?= 9999
 
 VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 DIST_DIR     := dist
 LDFLAGS      := -s -w -X main.version=$(VERSION)
 PLATFORMS    := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
-
-# Metadata used when generating a spec from examples/petstore (which carries
-# operation annotations on handler methods but no global swaggerInfo function).
-EXAMPLE_TITLE   ?= Pet Store API
-EXAMPLE_VERSION ?= 1.0.0
 
 .DEFAULT_GOAL := help
 
@@ -30,7 +22,7 @@ EXAMPLE_VERSION ?= 1.0.0
 .PHONY: help
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage: make \033[36m<target>\033[0m\n\n"} \
-	     /^[a-zA-Z_\-]+:.*##/ { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	     /^[a-zA-Z_\-]+:.*##/ { printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo ""
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
@@ -46,51 +38,45 @@ tidy: ## Tidy and verify Go module dependencies
 build: ## Build the swag3 CLI binary → ./bin/swag3
 	go build -o bin/swag3 $(CLI)
 
-.PHONY: build-example
-build-example: ## Build the petstore example binary → ./bin/petstore
-	go build -o bin/petstore $(EXAMPLE)
-
 .PHONY: build-all
-build-all: build build-example ## Build all binaries
+build-all: build ## Build all binaries
+	go build ./...
 
 # ── Spec generation ───────────────────────────────────────────────────────────
 
 .PHONY: gen
-gen: ## Generate openapi.json from testdata/petstore (canonical annotation source)
-	go run $(CLI) -dir $(SPEC_DIR) -output $(SPEC_OUT)
-	@echo "✓ spec written to $(SPEC_OUT)"
-
-.PHONY: gen-yaml
-gen-yaml: ## Generate openapi.yaml from testdata/petstore annotations
-	go run $(CLI) -dir $(SPEC_DIR) -format yaml -output openapi.yaml
-	@echo "✓ spec written to openapi.yaml"
-
-.PHONY: gen-example
-gen-example: ## Generate openapi.json from examples/petstore handler annotations
-	go run $(CLI) \
-		-dir $(EXAMPLE_DIR) \
-		-output $(EXAMPLE_SPEC)
+gen: ## Generate openapi.json from examples/bookstore → examples/bookstore/docs/openapi.json
+	go run $(CLI) -dirs $(EXAMPLE_DIR) -output $(EXAMPLE_SPEC)
 	@echo "✓ spec written to $(EXAMPLE_SPEC)"
 
-.PHONY: gen-update
-gen-update: ## Regenerate and update the e2e golden file
-	go test ./cmd/swag3/ -run TestE2E -update
-	@echo "✓ golden file updated"
+.PHONY: gen-yaml
+gen-yaml: ## Generate openapi.yaml from examples/bookstore
+	go run $(CLI) -dirs $(EXAMPLE_DIR) -output $(EXAMPLE_DIR)/docs/openapi.yaml
+	@echo "✓ spec written to $(EXAMPLE_DIR)/docs/openapi.yaml"
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+.PHONY: gen-dirs
+gen-dirs: ## Generate spec from custom directories  (usage: make gen-dirs DIRS=./myapp OUTPUT=./docs/openapi.json)
+	go run $(CLI) -dirs $(DIRS) -output $(OUTPUT)
+	@echo "✓ spec written to $(OUTPUT)"
 
-.PHONY: run
-run: gen ## Generate spec (testdata) then start the petstore example server
-	PORT=$(PORT) go run $(EXAMPLE)
+# ── Run example ───────────────────────────────────────────────────────────────
 
 .PHONY: example
-example: gen-example ## Generate spec from example code then start the server
-	@echo "→ starting server on :$(PORT)  (Swagger UI: http://localhost:$(PORT)/docs)"
-	cd $(EXAMPLE_DIR) && PORT=$(PORT) go run .
+example: ## Start the bookstore server (spec must already exist; run 'make gen' first if needed)
+	@test -f $(EXAMPLE_SPEC) || (echo "✗ $(EXAMPLE_SPEC) not found, run 'make gen' first" && exit 1)
+	@echo "→ starting bookstore on :$(PORT)"
+	@echo "   Swagger UI : http://localhost:$(PORT)/docs"
+	@echo "   Redoc      : http://localhost:$(PORT)/redoc"
+	@echo "   Raw JSON   : http://localhost:$(PORT)/openapi.json"
+	cd $(EXAMPLE_DIR) && go run .
 
-.PHONY: run-example
-run-example: ## Start the petstore server using the existing spec (no regen)
-	PORT=$(PORT) go run $(EXAMPLE)
+.PHONY: example-fresh
+example-fresh: gen ## Regenerate spec then start the bookstore server
+	@echo "→ starting bookstore on :$(PORT)"
+	@echo "   Swagger UI : http://localhost:$(PORT)/docs"
+	@echo "   Redoc      : http://localhost:$(PORT)/redoc"
+	@echo "   Raw JSON   : http://localhost:$(PORT)/openapi.json"
+	cd $(EXAMPLE_DIR) && go run .
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
@@ -192,9 +178,8 @@ release-dry: ## Show what would be packaged (no files written)
 clean: ## Remove build artifacts and generated files
 	rm -rf bin/ $(DIST_DIR)/
 	rm -f coverage.out
-	rm -f openapi.yaml
-	rm -f $(EXAMPLE_SPEC)
+	rm -f $(EXAMPLE_DIR)/docs/openapi.yaml
 
 .PHONY: clean-all
-clean-all: clean ## Remove all generated files including openapi.json
-	rm -f $(SPEC_OUT)
+clean-all: clean ## Remove all generated files including the example spec
+	rm -f $(EXAMPLE_SPEC)

@@ -639,6 +639,68 @@ func TestAnnotations_GinTypes_WithModuleLoader(t *testing.T) {
 	}
 }
 
+// TestResolve_LazyLoad_NoDanglingRef 验证懒加载后重试不会因 inProgress 拦截产生悬空 $ref。
+//
+// 场景：第三方包类型第一次出现时触发懒加载，加载完成后重试时 inProgress[key] 已清除，
+// 确保 schema 被真正构建并注册到 Components.Schemas，而不是返回悬空的 $ref。
+func TestResolve_LazyLoad_NoDanglingRef(t *testing.T) {
+	r, sb := newResolver()
+
+	// controllerFile 通过别名 vpc_pb 引入 tencentvpcmessage 包
+	controllerFile := &parser.RawFile{
+		Package:  "controller",
+		FilePath: "/controller/handler.go",
+		Imports: []parser.RawImport{
+			{Alias: "vpc_pb", Path: "gitlab.example.com/project/tencentvpcmessage", PkgName: "tencentvpcmessage"},
+		},
+		Structs: []parser.RawStruct{{
+			Name: "Response",
+			Fields: []parser.RawField{
+				// 字段类型使用别名 vpc_pb，引用第三方包类型
+				{Name: "List", TypeName: "[]*vpc_pb.SecurityGroupItem", Tag: `json:"list"`},
+			},
+		}},
+	}
+	r.SetFiles([]*parser.RawFile{controllerFile})
+
+	// 模拟懒加载器：第一次调用加载 tencentvpcmessage 包文件
+	loaded := false
+	r.SetLoader(func(pkgName string, srcFile *parser.RawFile) []*parser.RawFile {
+		if pkgName == "tencentvpcmessage" && !loaded {
+			loaded = true
+			return []*parser.RawFile{{
+				Package:  "tencentvpcmessage",
+				FilePath: "/tencentvpcmessage/types.go",
+				Structs: []parser.RawStruct{{
+					Name: "SecurityGroupItem",
+					Fields: []parser.RawField{
+						{Name: "GroupId", TypeName: "string", Tag: `json:"group_id"`},
+						{Name: "GroupName", TypeName: "string", Tag: `json:"group_name"`},
+					},
+				}},
+			}}
+		}
+		return nil
+	})
+
+	s := sb.Build("controller.Response", nil)
+	if s == nil || s.Ref == "" {
+		t.Fatalf("controller.Response should resolve to $ref, got %+v", s)
+	}
+
+	// SecurityGroupItem 必须真正注册（不能是悬空 $ref）
+	itemSchema := r.Components().Schemas.Get("tencentvpcmessage.SecurityGroupItem")
+	if itemSchema == nil {
+		t.Fatal("tencentvpcmessage.SecurityGroupItem should be registered — lazy-load inProgress bug?")
+	}
+	if itemSchema.Type != "object" {
+		t.Errorf("SecurityGroupItem type = %q, want object", itemSchema.Type)
+	}
+	if itemSchema.Properties == nil || itemSchema.Properties.Get("group_id") == nil {
+		t.Error("SecurityGroupItem should have 'group_id' property")
+	}
+}
+
 // ── SchemaKey helpers ─────────────────────────────────────────────────────────
 
 func TestNewSchemaKey(t *testing.T) {
@@ -1824,6 +1886,201 @@ func TestResolve_HasImport(t *testing.T) {
 	}
 	if r.Components().Schemas.Get("models.User") == nil {
 		t.Error("models.User should be registered in Components.Schemas")
+	}
+}
+
+// TestResolve_AliasedImport_ByPkgName 验证当 import 使用了别名引入时，
+// 注解中仍可使用包的真实名称（PkgName）进行类型引用。
+//
+// 场景：
+//
+//	import rsp "github.com/foo/resourcemgrmessage"
+//	// @Success 200 {object} response.Wrapper{data=resourcemgrmessage.QueryRsp}
+func TestResolve_AliasedImport_ByPkgName(t *testing.T) {
+	r, sb := newResolver()
+	r.SetFiles([]*parser.RawFile{
+		{
+			Package:  "response",
+			FilePath: "/response/wrapper.go",
+			Structs: []parser.RawStruct{{
+				Name:   "Wrapper",
+				Fields: []parser.RawField{{Name: "Data", TypeName: "interface{}", Tag: `json:"data"`}},
+			}},
+		},
+		{
+			Package:  "resourcemgrmessage",
+			FilePath: "/resourcemgrmessage/query.go",
+			Structs: []parser.RawStruct{{
+				Name:   "QueryRsp",
+				Fields: []parser.RawField{{Name: "List", TypeName: "[]string", Tag: `json:"list"`}},
+			}},
+		},
+	})
+
+	// import 使用了别名 "rsp"，但注解里用的是包本名 "resourcemgrmessage"
+	file := &parser.RawFile{
+		Package: "handlers",
+		Imports: []parser.RawImport{
+			{Alias: "", Path: "github.com/foo/response", PkgName: "response"},
+			{Alias: "rsp", Path: "github.com/foo/resourcemgrmessage", PkgName: "resourcemgrmessage"},
+		},
+	}
+
+	// 用别名引用（应正常工作）
+	s1 := sb.Build("response.Wrapper{data=rsp.QueryRsp}", file)
+	if s1 == nil {
+		t.Fatal("alias reference should resolve, got nil")
+	}
+	if len(s1.AllOf) != 2 {
+		t.Fatalf("expected allOf[2], got %d", len(s1.AllOf))
+	}
+
+	// 用包本名引用（兼容行为，应同样正常工作）
+	s2 := sb.Build("response.Wrapper{data=resourcemgrmessage.QueryRsp}", file)
+	if s2 == nil {
+		t.Fatal("pkg-name reference (with alias import) should resolve, got nil")
+	}
+	if len(s2.AllOf) != 2 {
+		t.Fatalf("expected allOf[2], got %d", len(s2.AllOf))
+	}
+	// 两种写法解析结果一致：override 字段都是 QueryRsp
+	if r.Components().Schemas.Get("resourcemgrmessage.QueryRsp") == nil {
+		t.Error("resourcemgrmessage.QueryRsp should be registered in Components.Schemas")
+	}
+}
+
+// TestResolve_LocalStruct_FieldWithAliasedImport 验证函数局部 struct 的字段使用了别名引入的包类型时能正确解析。
+//
+// 场景（与实际业务代码一致）：
+//
+//	import ecs_pb "gitlab.example.com/project/ecsmessage"
+//
+//	func Controller() gin.HandlerFunc {
+//	    type Response struct {
+//	        List []*ecs_pb.SecurityGroupItem `json:"list"`
+//	    }
+//	    // @Success 200 {object} controller.Controller.Response
+//	}
+func TestResolve_LocalStruct_FieldWithAliasedImport(t *testing.T) {
+	r, sb := newResolver()
+
+	// 模拟已加载文件：controller 文件（含局部 struct）+ ecsmessage 包（第三方）
+	controllerFile := &parser.RawFile{
+		Package:  "controller",
+		FilePath: "/controller/handler.go",
+		Imports: []parser.RawImport{
+			{Alias: "ecs_pb", Path: "gitlab.example.com/project/ecsmessage", PkgName: "ecsmessage"},
+		},
+		Functions: []parser.RawFunc{{
+			Name:     "NewController",
+			FilePath: "/controller/handler.go",
+			LocalStructs: []parser.RawStruct{{
+				Name: "Response",
+				Fields: []parser.RawField{
+					// 字段类型使用别名 ecs_pb
+					{Name: "List", TypeName: "[]*ecs_pb.SecurityGroupItem", Tag: `json:"list"`},
+					{Name: "Total", TypeName: "int32", Tag: `json:"total"`},
+				},
+			}},
+		}},
+	}
+	ecsmessageFile := &parser.RawFile{
+		Package:  "ecsmessage",
+		FilePath: "/ecsmessage/types.go",
+		Structs: []parser.RawStruct{{
+			Name: "SecurityGroupItem",
+			Fields: []parser.RawField{
+				{Name: "GroupId", TypeName: "string", Tag: `json:"group_id"`},
+				{Name: "GroupName", TypeName: "string", Tag: `json:"group_name"`},
+			},
+		}},
+	}
+	r.SetFiles([]*parser.RawFile{controllerFile, ecsmessageFile})
+
+	// 解析函数局部类型
+	s := sb.Build("controller.NewController.Response", controllerFile)
+	if s == nil || s.Ref == "" {
+		t.Fatalf("controller.NewController.Response should resolve to $ref, got %+v", s)
+	}
+
+	// Response 的 schema 应包含 list 字段（需要解析 ecs_pb.SecurityGroupItem）
+	respSchema := r.Components().Schemas.Get("controller.NewController.Response")
+	if respSchema == nil {
+		t.Fatal("controller.NewController.Response not found in Components.Schemas")
+	}
+	if respSchema.Properties == nil || respSchema.Properties.Get("list") == nil {
+		t.Error("Response schema should contain 'list' field resolved from ecs_pb.SecurityGroupItem")
+	}
+	if respSchema.Properties.Get("total") == nil {
+		t.Error("Response schema should contain 'total' field")
+	}
+
+	// SecurityGroupItem 应被注册为独立 schema
+	if r.Components().Schemas.Get("ecsmessage.SecurityGroupItem") == nil {
+		t.Error("ecsmessage.SecurityGroupItem should be registered in Components.Schemas")
+	}
+}
+
+// TestResolve_LocalStruct_SiblingReference 验证局部 struct 的字段引用同函数内另一个局部 struct 时能正确解析。
+//
+// 场景（真实业务代码）：
+//
+//	func Controller() gin.HandlerFunc {
+//	    type RegionItem struct { RegionCode string `json:"region_code"` }
+//	    type Response struct { RegionList []*RegionItem `json:"region_list"` }
+//	    // @Success 200 {object} response.baseResponse{data=controller.Controller.Response}
+//	}
+func TestResolve_LocalStruct_SiblingReference(t *testing.T) {
+	_, sb := newResolver()
+
+	controllerFile := &parser.RawFile{
+		Package:  "controller",
+		FilePath: "/controller/handler.go",
+		Functions: []parser.RawFunc{{
+			Name:     "NewRDSController",
+			FilePath: "/controller/handler.go",
+			LocalStructs: []parser.RawStruct{
+				{
+					Name: "RegionItem",
+					Fields: []parser.RawField{
+						{Name: "RegionCode", TypeName: "string", Tag: `json:"region_code"`},
+					},
+				},
+				{
+					Name: "Response",
+					Fields: []parser.RawField{
+						// 字段引用同函数内的 RegionItem（无包限定符）
+						{Name: "RegionList", TypeName: "[]*RegionItem", Tag: `json:"region_list"`},
+						{Name: "Total", TypeName: "int32", Tag: `json:"total"`},
+					},
+				},
+			},
+		}},
+	}
+	sb.resolver.SetFiles([]*parser.RawFile{controllerFile})
+
+	s := sb.Build("controller.NewRDSController.Response", controllerFile)
+	if s == nil || s.Ref == "" {
+		t.Fatalf("controller.NewRDSController.Response should resolve to $ref, got %+v", s)
+	}
+
+	respSchema := sb.resolver.Components().Schemas.Get("controller.NewRDSController.Response")
+	if respSchema == nil {
+		t.Fatal("Response not found in Components.Schemas")
+	}
+
+	// region_list 字段必须存在（需要找到 RegionItem 局部 struct）
+	if respSchema.Properties == nil || respSchema.Properties.Get("region_list") == nil {
+		t.Error("Response schema should contain 'region_list' field (sibling local struct reference)")
+	}
+	if respSchema.Properties.Get("total") == nil {
+		t.Error("Response schema should contain 'total' field")
+	}
+
+	// RegionItem 应以包含函数名的完整 key 注册（避免与其他函数同名局部 struct 冲突）
+	regionItemKey := "controller.NewRDSController.RegionItem"
+	if sb.resolver.Components().Schemas.Get(regionItemKey) == nil {
+		t.Errorf("sibling local struct should be registered as %q", regionItemKey)
 	}
 }
 

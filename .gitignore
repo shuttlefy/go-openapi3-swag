@@ -21,6 +21,7 @@ go.work.sum
 .vscode/
 *.swp
 *.swo
+debug*
 
 # OS
 .DS_Store

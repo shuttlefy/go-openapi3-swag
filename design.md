@@ -689,14 +689,13 @@ BaseTypeExpr   = qualifier "." [funcName "."] TypeName  // 必须包限定；fun
 
 #### 第二步：解析 qualifier → pkgName
 
-| 情况 | 处理 |
-|------|------|
-| qualifier == "" | **禁止**（注解强制要求包名限定，报错） |
-| qualifier == `currentFile.Package` | 当前包；pkgName = qualifier |
-| `currentFile.Imports` 中 `Alias == qualifier` | pkgName = 该条目的 `PkgName` |
-| `currentFile.Imports` 中 `PkgName == qualifier` | pkgName = qualifier |
-| dot-import（`Alias == "."` 的条目） | 回退：将 typeName 视为当前包或 dot-import 包内的类型 |
-| 均未匹配 | 报错：`unknown qualifier "qualifier" in file X` |
+| 优先级 | 情况 | 处理 |
+|--------|------|------|
+| — | qualifier == "" | **禁止**（注解强制要求包名限定，报错） |
+| 1 | qualifier == `currentFile.Package` | 当前包；pkgName = qualifier |
+| 2 | `currentFile.Imports` 中 `Alias == qualifier` | **别名精确匹配**；pkgName = 该条目的 `PkgName` |
+| 3 | `currentFile.Imports` 中 `PkgName == qualifier` | **包本名兼容匹配**；pkgName = qualifier。兼容「用别名或 dot-import 引入但注解中写了包本名」的场景，例如 `import rsp "github.com/foo/resourcemgrmessage"` 但注解写 `resourcemgrmessage.QueryRsp` |
+| — | 均未匹配 | 返回 nil（schema 解析失败，操作路由仍保留） |
 
 `funcName` 若非空，携带至第四步，仅在匹配函数的 `LocalStructs` 中查找；`funcName` 为空时不查 `LocalStructs`。
 

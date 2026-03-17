@@ -64,6 +64,9 @@ type Resolver struct {
 	sb         *SchemaBuilder         // 反向引用，由 NewSchemaBuilder 设置
 	loader     PackageLoader
 	loadedPkgs map[string]bool // key = import path，防止重复加载
+	// localFuncCtx 记录当前正在构建 schema 的局部 struct 所属函数名。
+	// 用于解析「局部 struct 的字段引用同函数内另一个局部 struct」的场景。
+	localFuncCtx string
 }
 
 func NewResolver() *Resolver {
@@ -244,10 +247,14 @@ func (r *Resolver) resolveSimpleType(typeStr string, file *parser.RawFile) *spec
 // resolveQualifier 将包限定符解析为包名（支持 import alias）。
 //
 // 当 file 为 nil 时宽松处理（直接返回 qualifier），适用于编程构造 RawFile 的测试场景。
-// 当 file 非 nil 时严格按 imports 查找：
-//   - qualifier 等于当前包名 → 当前包
-//   - 在 Imports 中找到匹配的 Alias 或 PkgName → 返回 PkgName
-//   - 均未命中 → 返回 ""（表示无法解析，由调用方决定如何处理）
+// 当 file 非 nil 时严格按 imports 查找，优先级：
+//  1. qualifier 等于当前文件包名 → 当前包
+//  2. qualifier 命中某条 import 的 Alias → 返回该 import 的 PkgName（别名优先）
+//  3. qualifier 命中某条 import 的 PkgName → 返回 PkgName
+//     兼容「用别名/dot-import 引入但注解中写了包本名」的场景，例如：
+//     import rsp "github.com/foo/resourcemgrmessage"
+//     注解：response.baseResponse{data=resourcemgrmessage.QuerySpecificDbAccountRsp}
+//  4. 均未命中 → 返回 ""
 func (r *Resolver) resolveQualifier(qualifier string, file *parser.RawFile) string {
 	if file == nil {
 		return qualifier // 无文件上下文时宽松处理
@@ -256,11 +263,13 @@ func (r *Resolver) resolveQualifier(qualifier string, file *parser.RawFile) stri
 		return qualifier
 	}
 	for _, imp := range file.Imports {
+		// 优先：别名精确匹配
 		if imp.Alias == qualifier {
 			return imp.PkgName
 		}
-		if imp.Alias == "" && imp.PkgName == qualifier {
-			return qualifier
+		// 兼容：用包本名引用（无论该 import 是否设置了别名，包括 dot-import）
+		if imp.PkgName == qualifier {
+			return imp.PkgName
 		}
 	}
 	return "" // qualifier 未出现在该文件的 import 声明中
@@ -291,13 +300,44 @@ func (r *Resolver) lookupAndBuild(key SchemaKey, pkg, typeName, funcName string,
 				}
 				for _, ls := range fn.LocalStructs {
 					if ls.Name == typeName {
+						// 设置局部函数上下文，使字段解析时能找到同函数内的其他局部 struct
+						prev := r.localFuncCtx
+						r.localFuncCtx = funcName
 						s := r.sb.buildStructSchema(ls, rf)
+						r.localFuncCtx = prev
 						r.register(key, s)
 						return r.RefOf(key)
 					}
 				}
 			}
 			continue
+		}
+
+		// 无限定符的简单类型：若当前处于某函数的局部 struct 构建上下文中，
+		// 优先在该函数的局部 struct 中查找（解决同函数内 struct 互相引用的问题）
+		if funcName == "" && r.localFuncCtx != "" {
+			for _, fn := range rf.Functions {
+				if fn.Name != r.localFuncCtx {
+					continue
+				}
+				for _, ls := range fn.LocalStructs {
+					if ls.Name == typeName {
+						// 用包含函数名的完整 key 注册，避免不同函数同名局部 struct 冲突
+						localKey := SchemaKey(fmt.Sprintf("%s.%s.%s", pkg, r.localFuncCtx, typeName))
+						if _, ok := r.registry[localKey]; ok {
+							return r.RefOf(localKey)
+						}
+						if r.inProgress[localKey] {
+							return r.RefOf(localKey)
+						}
+						r.inProgress[localKey] = true
+						s := r.sb.buildStructSchema(ls, rf)
+						delete(r.inProgress, localKey)
+						r.register(localKey, s)
+						return r.RefOf(localKey)
+					}
+				}
+			}
 		}
 
 		// 包级 struct
@@ -348,6 +388,9 @@ func (r *Resolver) lookupAndBuild(key SchemaKey, pkg, typeName, funcName string,
 			r.loadedPkgs[cacheKey] = true
 			if loaded := r.loader(pkg, currentFile); len(loaded) > 0 {
 				r.files = append(r.files, loaded...)
+				// 重试前必须清除 inProgress 标记，否则递归调用会因为 inProgress[key]==true
+				// 直接返回悬空 $ref（schema 未注册），导致 components 中缺失该类型的定义。
+				delete(r.inProgress, key)
 				return r.lookupAndBuild(key, pkg, typeName, funcName, currentFile)
 			}
 		}
@@ -356,12 +399,15 @@ func (r *Resolver) lookupAndBuild(key SchemaKey, pkg, typeName, funcName string,
 }
 
 // findImportPath 从文件的 import 声明中根据包名找到完整 import path。
+// 查找优先级与 resolveQualifier 一致：
+//  1. Alias 精确匹配（别名优先）
+//  2. PkgName 匹配（兼容别名引入、dot-import、无别名引入）
 func findImportPath(pkgName string, file *parser.RawFile) string {
 	for _, imp := range file.Imports {
-		switch {
-		case imp.Alias == pkgName:
+		if imp.Alias == pkgName {
 			return imp.Path
-		case imp.Alias == "" && imp.PkgName == pkgName:
+		}
+		if imp.PkgName == pkgName {
 			return imp.Path
 		}
 	}
