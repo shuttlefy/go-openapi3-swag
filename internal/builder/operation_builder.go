@@ -1,11 +1,14 @@
 package builder
 
 import (
-	spec "github.com/shuttlefy/go-openapi3-spec"
+	"strings"
+
+	spec3 "github.com/shuttlefy/go-openapi3-spec"
 	"github.com/shuttlefy/go-openapi3-swag/internal/extractor"
+	"github.com/shuttlefy/go-openapi3-swag/internal/parser"
 )
 
-// OperationBuilder converts OperationAnnotation into spec3 Operation objects.
+// OperationBuilder 将 OperationAnnotation 转换为 spec3.Operation。
 type OperationBuilder struct {
 	schema *SchemaBuilder
 }
@@ -14,207 +17,215 @@ func NewOperationBuilder(schema *SchemaBuilder) *OperationBuilder {
 	return &OperationBuilder{schema: schema}
 }
 
-func (ob *OperationBuilder) Build(anno extractor.OperationAnnotation) *spec.Operation {
-	op := &spec.Operation{
-		OperationID: anno.OperationID,
-		Summary:     strPtr(anno.Summary),
-		Description: strPtr(anno.Description),
-		Tags:        anno.Tags,
-		Deprecated:  anno.Deprecated,
+// Build 构建单个 spec3.Operation。
+// fileIndex 是 filePath → *parser.RawFile 的索引，用于解析注解中的类型引用。
+func (ob *OperationBuilder) Build(
+	op extractor.OperationAnnotation,
+	fileIndex map[string]*parser.RawFile,
+) (*spec3.Operation, error) {
+	file := fileIndex[op.FilePath]
+
+	oper := &spec3.Operation{
+		OperationID: op.OperationID,
+		Tags:        op.Tags,
+		Deprecated:  op.Deprecated,
+		Responses:   spec3.NewOrderedResponses(),
 	}
 
-	op.Parameters = ob.buildParameters(anno.Params)
-	op.RequestBody = ob.buildRequestBody(anno)
-	op.Responses = ob.buildResponses(anno)
-	op.Security = ob.buildSecurity(anno.Security)
+	oper.Summary = strPtr(op.Summary)
+	oper.Description = strPtr(op.Description)
 
-	return op
+	// 参数（非 body / formData）
+	for _, p := range op.Params {
+		if inBody(p.In) {
+			continue
+		}
+		oper.Parameters = append(oper.Parameters, ob.buildParam(p, file))
+	}
+
+	// 请求体
+	if rb := ob.buildRequestBody(op, file); rb != nil {
+		oper.RequestBody = *rb
+	}
+
+	// 响应
+	for _, resp := range op.Responses {
+		oper.Responses.Set(resp.Code, ob.buildResponse(resp, op.Headers, file))
+	}
+
+	// 安全要求
+	for _, sec := range op.Security {
+		var sr spec3.SecurityRequirement
+		sr.Set(sec.Name, sec.Scopes...)
+		oper.Security = append(oper.Security, sr)
+	}
+
+	return oper, nil
 }
 
-func (ob *OperationBuilder) buildParameters(params []extractor.ParamAnnotation) []spec.Parameter {
-	if len(params) == 0 {
+func inBody(in string) bool {
+	s := strings.ToLower(in)
+	return s == "body" || s == "formdata"
+}
+
+// ── Parameter ─────────────────────────────────────────────────────────────────
+
+func (ob *OperationBuilder) buildParam(p extractor.ParamAnnotation, file *parser.RawFile) spec3.Parameter {
+	param := spec3.Parameter{
+		Name:        p.Name,
+		In:          strings.ToLower(p.In),
+		Required:    p.Required,
+		Description: strPtr(p.Description),
+	}
+
+	if schema := ob.resolveParamSchema(p.TypeName, p.Format, file); schema != nil {
+		param.Schema = *schema
+	}
+	return param
+}
+
+func (ob *OperationBuilder) resolveParamSchema(typeName, format string, file *parser.RawFile) *spec3.Schema {
+	s := ob.schema.Build(normalizePrimitive(typeName), file)
+	if s == nil {
+		return nil
+	}
+	if format != "" {
+		cp := *s
+		cp.Format = format
+		return &cp
+	}
+	return s
+}
+
+// normalizePrimitive 将注解中的原始类型别名统一为内部类型名。
+func normalizePrimitive(t string) string {
+	switch strings.ToLower(t) {
+	case "integer":
+		return "integer"
+	case "number":
+		return "number"
+	case "boolean":
+		return "bool"
+	case "file":
+		return "file"
+	}
+	return t
+}
+
+// ── Request Body ──────────────────────────────────────────────────────────────
+
+func (ob *OperationBuilder) buildRequestBody(op extractor.OperationAnnotation, file *parser.RawFile) *spec3.RequestBody {
+	var bodyParams, formParams []extractor.ParamAnnotation
+	for _, p := range op.Params {
+		switch strings.ToLower(p.In) {
+		case "body":
+			bodyParams = append(bodyParams, p)
+		case "formdata":
+			formParams = append(formParams, p)
+		}
+	}
+	if len(bodyParams) == 0 && len(formParams) == 0 {
 		return nil
 	}
 
-	var out []spec.Parameter
-	for _, p := range params {
-		var schema spec.Schema
-		if _, isPrimitive := paramTypePrimitives[p.TypeName]; isPrimitive {
-			schema = ParamTypeSchema(p.TypeName, p.Format)
-			if p.Default != "" {
-				schema.Default = tryParseDefault(p.Default)
-			}
-			if len(p.Enums) > 0 {
-				schema.Enum = toEnumInterfaces(p.Enums)
-			}
-		} else {
-			// Non-primitive: resolve as a struct/alias schema reference.
-			schema = *ob.schema.SchemaForType(p.TypeName)
-		}
+	content := spec3.NewOrderedMediaTypes()
 
-		param := spec.Parameter{
-			Name:        p.Name,
-			In:          p.In,
-			Description: strPtr(p.Description),
-			Required:    p.Required,
-			Schema:      schema,
-		}
-		out = append(out, param)
+	if len(bodyParams) > 0 {
+		p := bodyParams[0]
+		ct := firstMIME(op.Accept, "application/json")
+		mt := &spec3.MediaType{Schema: ob.schema.Build(p.TypeName, file)}
+		content.Set(ct, mt)
 	}
-	return out
+
+	if len(formParams) > 0 {
+		s := buildFormDataSchema(formParams)
+		content.Set("multipart/form-data", &spec3.MediaType{Schema: &s})
+	}
+
+	rb := &spec3.RequestBody{Required: true, Content: content}
+	return rb
 }
 
-func (ob *OperationBuilder) buildRequestBody(anno extractor.OperationAnnotation) spec.RequestBody {
-	rb := anno.RequestBody
-	if rb == nil {
-		return spec.RequestBody{}
+func firstMIME(accept []string, fallback string) string {
+	if len(accept) > 0 {
+		return accept[0]
 	}
-
-	content := spec.NewOrderedMediaTypes()
-
-	if rb.IsForm {
-		formSchema := ob.buildFormSchema(rb)
-		contentTypes := anno.Accept
-		if len(contentTypes) == 0 {
-			contentTypes = []string{"multipart/form-data"}
-		}
-		for _, ct := range contentTypes {
-			content.Set(ct, &spec.MediaType{Schema: formSchema})
-		}
-	} else {
-		bodySchema := ob.schema.SchemaForTypeExpr(rb.Type, false)
-		contentTypes := anno.Accept
-		if len(contentTypes) == 0 {
-			contentTypes = []string{"application/json"}
-		}
-		for _, ct := range contentTypes {
-			content.Set(ct, &spec.MediaType{Schema: bodySchema})
-		}
-	}
-
-	return spec.RequestBody{
-		Description: strPtr(rb.Description),
-		Content:     content,
-		Required:    rb.Required,
-	}
+	return fallback
 }
 
-func (ob *OperationBuilder) buildFormSchema(rb *extractor.RequestBodyAnnotation) *spec.Schema {
-	if len(rb.Fields) == 0 && rb.TypeName != "" {
-		return ob.schema.SchemaForType(rb.TypeName)
-	}
-
-	props := spec.NewOrderedSchemas()
+func buildFormDataSchema(params []extractor.ParamAnnotation) spec3.Schema {
+	props := spec3.NewOrderedSchemas()
 	var required []string
-	for _, f := range rb.Fields {
-		s := ParamTypeSchema(f.TypeName, "")
-		props.Set(f.Name, &s)
-		if f.Required {
-			required = append(required, f.Name)
+
+	for _, p := range params {
+		var s *spec3.Schema
+		switch strings.ToLower(p.TypeName) {
+		case "file":
+			s = &spec3.Schema{Type: "string", Format: "binary"}
+		default:
+			if ps, ok := primitiveSchema(normalizePrimitive(p.TypeName)); ok {
+				s = ps
+			} else {
+				s = &spec3.Schema{Type: "string"}
+			}
+		}
+		if p.Description != "" {
+			s.Description = p.Description
+		}
+		props.Set(p.Name, s)
+		if p.Required {
+			required = append(required, p.Name)
 		}
 	}
 
-	schema := &spec.Schema{
-		Type:       "object",
-		Properties: &props,
-	}
+	schema := spec3.Schema{Type: "object", Properties: &props}
 	if len(required) > 0 {
 		schema.Required = required
 	}
 	return schema
 }
 
-func (ob *OperationBuilder) buildResponses(anno extractor.OperationAnnotation) spec.OrderedResponses {
-	responses := spec.NewOrderedResponses()
+// ── Response ──────────────────────────────────────────────────────────────────
 
-	produce := anno.Produce
-	if len(produce) == 0 {
-		produce = []string{"application/json"}
+func (ob *OperationBuilder) buildResponse(
+	resp extractor.ResponseAnnotation,
+	headers []extractor.HeaderAnnotation,
+	file *parser.RawFile,
+) *spec3.Response {
+	r := &spec3.Response{Description: strPtr(resp.Description)}
+
+	if resp.TypeName != "" || resp.WrapType != "" {
+		if schema := ob.buildResponseSchema(resp, file); schema != nil {
+			ct := spec3.NewOrderedMediaTypes()
+			ct.Set("application/json", &spec3.MediaType{Schema: schema})
+			r.Content = &ct
+		}
 	}
 
-	for _, ra := range anno.Responses {
-		resp := ob.buildSingleResponse(ra, produce)
-		responses.Set(ra.Code, resp)
+	// response headers（匹配状态码）
+	for _, h := range headers {
+		if h.Code != resp.Code {
+			continue
+		}
+		oh := spec3.NewOrderedHeaders()
+		hHeader := &spec3.Header{Parameter: spec3.Parameter{
+			Description: strPtr(h.Description),
+			Schema:      spec3.Schema{Type: h.TypeName},
+		}}
+		oh.Set(h.Name, hHeader)
+		r.Headers = &oh
 	}
 
-	return responses
+	return r
 }
 
-func (ob *OperationBuilder) buildSingleResponse(ra extractor.ResponseAnnotation, produce []string) *spec.Response {
-	resp := &spec.Response{
-		Description: strPtr(ra.Description),
-	}
-
-	hasBody := ra.TypeName != "" || ra.Type.Name != "" || ra.IsPrimitive
-	if hasBody {
-		content := spec.NewOrderedMediaTypes()
-		var schema *spec.Schema
-
-		if ra.IsPrimitive {
-			s := primitiveAnnotationSchema(ra.TypeName)
-			schema = &s
-		} else if ra.Type.Name != "" {
-			schema = ob.schema.SchemaForTypeExpr(ra.Type, ra.IsArray)
-		} else {
-			inner := ob.schema.SchemaForType(ra.TypeName)
-			if ra.IsArray {
-				schema = &spec.Schema{Type: "array", Items: inner}
-			} else {
-				schema = inner
-			}
+func (ob *OperationBuilder) buildResponseSchema(resp extractor.ResponseAnnotation, file *parser.RawFile) *spec3.Schema {
+	if resp.TypeName == "" {
+		// 纯原始类型包装，如 {string}
+		if s, ok := primitiveSchema(resp.WrapType); ok {
+			return s
 		}
-
-		for _, ct := range produce {
-			content.Set(ct, &spec.MediaType{Schema: schema})
-		}
-		resp.Content = &content
-	}
-
-	if len(ra.Headers) > 0 {
-		headers := spec.NewOrderedHeaders()
-		for _, h := range ra.Headers {
-			hSchema := ParamTypeSchema(h.TypeName, "")
-			headers.Set(h.Name, &spec.Header{
-				Parameter: spec.Parameter{
-					Description: strPtr(h.Description),
-					Schema:      hSchema,
-				},
-			})
-		}
-		resp.Headers = &headers
-	}
-
-	return resp
-}
-
-func (ob *OperationBuilder) buildSecurity(reqs []extractor.SecurityRequirement) []spec.SecurityRequirement {
-	if len(reqs) == 0 {
 		return nil
 	}
-	var out []spec.SecurityRequirement
-	for _, r := range reqs {
-		var sr spec.SecurityRequirement
-		scopes := r.Scopes
-		if scopes == nil {
-			scopes = []string{}
-		}
-		sr.Set(r.Name, scopes...)
-		out = append(out, sr)
-	}
-	return out
-}
-
-func primitiveAnnotationSchema(typeName string) spec.Schema {
-	switch typeName {
-	case "string", "{string}":
-		return spec.Schema{Type: "string"}
-	case "integer", "{integer}":
-		return spec.Schema{Type: "integer"}
-	case "number", "{number}":
-		return spec.Schema{Type: "number"}
-	case "boolean", "{boolean}":
-		return spec.Schema{Type: "boolean"}
-	default:
-		return spec.Schema{Type: "string"}
-	}
+	return ob.schema.Build(resp.TypeName, file)
 }

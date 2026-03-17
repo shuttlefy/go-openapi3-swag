@@ -7,391 +7,202 @@ import (
 	"github.com/shuttlefy/go-openapi3-swag/internal/parser"
 )
 
-var oauthFlowCanonical = map[string]string{
-	"implicit":          "implicit",
-	"password":          "password",
-	"clientcredentials": "clientCredentials",
-	"authorizationcode": "authorizationCode",
-}
-
+// GoExtractor 从 []*parser.RawFile 中提取结构化 API 注解。
 type GoExtractor struct{}
 
-func NewGoExtractor() *GoExtractor {
-	return &GoExtractor{}
-}
-
-func (e *GoExtractor) Extract(ast *parser.RawAST) (*ExtractResult, error) {
+// Extract 遍历所有 RawFile，提取全局注解和操作注解。
+//
+// 全局注解：包含 @title / @version 等全局标签的函数（通常是 main）。
+// 操作注解：包含 @Router 标签的函数，缺少 @Router 则忽略。
+func (e *GoExtractor) Extract(files []*parser.RawFile) (*ExtractResult, error) {
 	result := &ExtractResult{}
+	secCtx := newSecDefCtx()
 
-	e.extractGlobal(ast, result)
-	e.extractOperations(ast, result)
+	for _, rf := range files {
+		for _, fn := range rf.Functions {
+			if len(fn.Comments) == 0 {
+				continue
+			}
+			tags, plain := parseCommentLines(fn.Comments)
 
+			// 应用全局标签（@title、@version 等）
+			applyGlobalTags(tags, &result.Global, secCtx)
+
+			// 若包含 @Router，构建操作注解
+			if route, ok := findRouterTag(tags); ok {
+				op, err := buildOperation(fn, tags, plain, route)
+				if err != nil {
+					return nil, fmt.Errorf("%s:%d: %w", rf.FilePath, fn.Line, err)
+				}
+				result.Operations = append(result.Operations, op)
+			}
+		}
+	}
+
+	// 将构建好的 security defs 写回 Global
+	result.Global.SecurityDefs = secCtx.defs
 	return result, nil
 }
 
-// extractGlobal scans functions for global annotations.
-// Supports both Swagger 2.0 legacy tags (host/basePath/schemes) and
-// OpenAPI 3 native tags (server).
-func (e *GoExtractor) extractGlobal(ast *parser.RawAST, result *ExtractResult) {
-	// Accumulate multi-line security definitions keyed by "type.name"
-	secDefs := map[string]*SecurityDefAnnotation{}
-	var secDefOrder []string
+// ── 全局注解 ──────────────────────────────────────────────────────────────────
 
-	for _, fn := range ast.Functions {
-		for _, comment := range fn.Comments {
-			name, value := parseTag(comment)
-			switch name {
-			case "title":
-				result.Global.Title = value
-			case "version":
-				result.Global.Version = value
-			case "description":
-				result.Global.Description = value
-			case "termsofservice":
-				result.Global.TermsOfService = value
-			case "contact.name":
-				result.Global.Contact.Name = value
-			case "contact.url":
-				result.Global.Contact.URL = value
-			case "contact.email":
-				result.Global.Contact.Email = value
-			case "license.name":
-				result.Global.License.Name = value
-			case "license.url":
-				result.Global.License.URL = value
-
-			// Legacy Swagger 2.0 — builder will convert to servers[]
-			case "host":
-				result.Global.Host = value
-			case "basepath":
-				result.Global.BasePath = value
-			case "schemes":
-				result.Global.Schemes = strings.Fields(value)
-
-			// OpenAPI 3 native servers
-			case "server":
-				result.Global.Servers = append(result.Global.Servers, parseServer(value))
-
-			case "externaldocs.url":
-				e.ensureExternalDocs(result)
-				result.Global.ExternalDocs.URL = value
-			case "externaldocs.description":
-				e.ensureExternalDocs(result)
-				result.Global.ExternalDocs.Description = value
-
-			case "tag":
-				result.Global.Tags = append(result.Global.Tags, parseTagAnnotation(value))
-
-			default:
-				e.parseSecurityDef(name, value, secDefs, &secDefOrder)
-			}
-		}
-	}
-
-	for _, key := range secDefOrder {
-		result.Global.SecurityDefs = append(result.Global.SecurityDefs, *secDefs[key])
-	}
-}
-
-func (e *GoExtractor) ensureExternalDocs(result *ExtractResult) {
-	if result.Global.ExternalDocs == nil {
-		result.Global.ExternalDocs = &ExternalDocsAnnotation{}
-	}
-}
-
-func parseTagAnnotation(value string) TagAnnotation {
-	parts := strings.SplitN(value, " ", 2)
-	t := TagAnnotation{Name: parts[0]}
-	if len(parts) > 1 {
-		t.Description = strings.Trim(parts[1], `"`)
-	}
-	return t
-}
-
-// parseSecurityDef handles multi-line security definition tags.
-// Patterns:
-//
-//	@securityDefinitions.apikey ApiKeyAuth
-//	@securityDefinitions.apikey.in header
-//	@securityDefinitions.apikey.name X-API-Key
-//	@securityDefinitions.basic BasicAuth
-//	@securityDefinitions.oauth2.implicit OAuth2Implicit
-//	@securityDefinitions.oauth2.implicit.authorizationUrl https://...
-//	@securityDefinitions.oauth2.implicit.scope.read "Read access"
-func (e *GoExtractor) parseSecurityDef(tagName, value string, defs map[string]*SecurityDefAnnotation, order *[]string) {
-	if !strings.HasPrefix(tagName, "securitydefinitions.") {
-		return
-	}
-
-	rest := tagName[len("securitydefinitions."):]
-	parts := strings.SplitN(rest, ".", -1)
-	if len(parts) == 0 {
-		return
-	}
-
-	schemeType := parts[0]
-	// Normalize lowercased flow types back to canonical casing
-	for i, p := range parts {
-		if canonical, ok := oauthFlowCanonical[p]; ok {
-			parts[i] = canonical
-		}
-	}
-
-	// Determine the key for this security scheme
-	var key string
-	switch {
-	case schemeType == "oauth2" && len(parts) >= 2:
-		// oauth2.implicit, oauth2.password, etc.
-		flowType := parts[1]
-		if len(parts) == 2 {
-			// @securityDefinitions.oauth2.implicit SchemeName
-			key = schemeType + "." + flowType + "." + value
-			if _, ok := defs[key]; !ok {
-				defs[key] = &SecurityDefAnnotation{
-					Name:          value,
-					Type:          "oauth2",
-					OAuthFlowType: flowType,
-					Scopes:        map[string]string{},
-				}
-				*order = append(*order, key)
-			}
-			return
-		}
-		// Sub-properties: find the scheme name — it's the last set name for this flow
-		schemeName := findOAuth2SchemeName(defs, schemeType, flowType)
-		if schemeName == "" {
-			return
-		}
-		key = schemeType + "." + flowType + "." + schemeName
-		sd := defs[key]
-		if sd == nil {
-			return
-		}
-		subProp := parts[2]
-		switch subProp {
-		case "authorizationurl":
-			sd.AuthorizationURL = value
-		case "tokenurl":
-			sd.TokenURL = value
-		case "scope":
-			if len(parts) >= 4 {
-				scopeName := parts[3]
-				sd.Scopes[scopeName] = strings.Trim(value, `"`)
-			}
+// applyGlobalTags 将 global 级别的 tagLine 应用到 GlobalAnnotation。
+func applyGlobalTags(tags []tagLine, global *GlobalAnnotation, secCtx *secDefCtx) {
+	for _, tag := range tags {
+		switch tag.name {
+		case "title":
+			global.Title = tag.value
+		case "version":
+			global.Version = tag.value
 		case "description":
-			sd.Description = value
-		}
-		return
-
-	default:
-		if len(parts) == 1 {
-			// @securityDefinitions.apikey SchemeName
-			key = schemeType + "." + value
-			if _, ok := defs[key]; !ok {
-				sd := &SecurityDefAnnotation{Name: value}
-				switch schemeType {
-				case "apikey":
-					sd.Type = "apiKey"
-				case "basic":
-					sd.Type = "http"
-					sd.Scheme = "basic"
-				case "bearer":
-					sd.Type = "http"
-					sd.Scheme = "bearer"
-				case "openidconnect":
-					sd.Type = "openIdConnect"
-				}
-				defs[key] = sd
-				*order = append(*order, key)
+			if global.Description == "" {
+				global.Description = tag.value
+			} else {
+				global.Description += "\n" + tag.value
 			}
-			return
-		}
-		// Sub-property: @securityDefinitions.apikey.in header
-		schemeName := findSchemeName(defs, schemeType)
-		if schemeName == "" {
-			return
-		}
-		key = schemeType + "." + schemeName
-		sd := defs[key]
-		if sd == nil {
-			return
-		}
-		subProp := parts[1]
-		switch subProp {
-		case "in":
-			sd.In = value
-		case "name":
-			sd.FieldName = value
-		case "scheme":
-			sd.Scheme = value
-		case "bearerformat":
-			sd.BearerFormat = value
-		case "description":
-			sd.Description = value
-		case "openidconnecturl":
-			sd.OpenIDConnectURL = value
-		}
-	}
-}
+		case "termsofservice":
+			global.TermsOfService = tag.value
 
-func findSchemeName(defs map[string]*SecurityDefAnnotation, schemeType string) string {
-	for k, v := range defs {
-		if strings.HasPrefix(k, schemeType+".") && v != nil {
-			return v.Name
-		}
-	}
-	return ""
-}
+		// contact.*
+		case "contact.name":
+			global.Contact.Name = tag.value
+		case "contact.url":
+			global.Contact.URL = tag.value
+		case "contact.email":
+			global.Contact.Email = tag.value
 
-func findOAuth2SchemeName(defs map[string]*SecurityDefAnnotation, schemeType, flowType string) string {
-	prefix := schemeType + "." + flowType + "."
-	for k, v := range defs {
-		if strings.HasPrefix(k, prefix) && v != nil {
-			return v.Name
-		}
-	}
-	return ""
-}
+		// license.*
+		case "license.name":
+			global.License.Name = tag.value
+		case "license.url":
+			global.License.URL = tag.value
 
-func (e *GoExtractor) extractOperations(ast *parser.RawAST, result *ExtractResult) {
-	for _, fn := range ast.Functions {
-		op := e.parseOperation(fn)
-		if op == nil {
-			if hasSwagAnnotations(fn) {
-				if fn.Name == "main" {
-					continue
-				}
-				result.Diagnostics = append(result.Diagnostics, Diagnostic{
-					Level:    DiagWarn,
-					FilePath: fn.FilePath,
-					Line:     fn.Line,
-					Message:  fmt.Sprintf("function %q has swagger annotations but no @Router tag", fn.Name),
-				})
+		// externalDocs.*
+		case "externaldocs.url":
+			global.ExternalDocs.URL = tag.value
+		case "externaldocs.description":
+			global.ExternalDocs.Description = tag.value
+
+		// @server
+		case "server":
+			global.Servers = append(global.Servers, parseServerTag(tag.value))
+
+		// swaggo 兼容
+		case "host":
+			global.Host = tag.value
+		case "basepath":
+			global.BasePath = tag.value
+		case "schemes":
+			for _, s := range strings.Fields(tag.value) {
+				global.Schemes = append(global.Schemes, s)
 			}
-			continue
+
+		// @tag 全局标签声明
+		case "tag":
+			global.Tags = append(global.Tags, parseTagDecl(tag.value))
+
+		// @securityDefinitions.*
+		default:
+			if strings.HasPrefix(tag.name, "securitydefinitions.") {
+				rest := tag.name[len("securitydefinitions."):]
+				secCtx.applyTag(rest, tag.value)
+			}
 		}
-		result.Operations = append(result.Operations, *op)
 	}
 }
 
-// hasSwagAnnotations reports whether fn has any operation-level swagger tags.
-func hasSwagAnnotations(fn parser.RawFunc) bool {
-	for _, c := range fn.Comments {
-		name, _ := parseTag(c)
-		switch name {
-		case "summary", "description", "tags", "param", "success", "failure",
-			"id", "accept", "produce", "deprecated", "header", "security":
-			return true
+// ── 操作注解 ──────────────────────────────────────────────────────────────────
+
+// findRouterTag 在 tags 中寻找 @Router，找到则返回 (RouteInfo, true)。
+func findRouterTag(tags []tagLine) (RouteInfo, bool) {
+	for _, tag := range tags {
+		if tag.name == "router" {
+			route, err := parseRouterTag(tag.value)
+			if err == nil {
+				return route, true
+			}
 		}
 	}
-	return false
+	return RouteInfo{}, false
 }
 
-// parseOperation builds an OperationAnnotation from a function's comments.
-// Returns nil if the function has no @Router annotation.
-func (e *GoExtractor) parseOperation(fn parser.RawFunc) *OperationAnnotation {
-	op := &OperationAnnotation{
+// buildOperation 将函数信息和已解析的 tags 组装为 OperationAnnotation。
+func buildOperation(
+	fn parser.RawFunc,
+	tags []tagLine,
+	plainLines []string,
+	route RouteInfo,
+) (OperationAnnotation, error) {
+	op := OperationAnnotation{
 		FuncName: fn.Name,
 		FilePath: fn.FilePath,
 		Line:     fn.Line,
+		Route:    route,
 	}
 
-	hasRouter := false
 	var descLines []string
-	var bodyParams []ParamAnnotation
-	var formParams []ParamAnnotation
-	var headers []ResponseHeaderAnnotation
 
-	for _, comment := range fn.Comments {
-		name, value := parseTag(comment)
-		switch name {
+	for _, tag := range tags {
+		switch tag.name {
 		case "summary":
-			op.Summary = value
+			op.Summary = tag.value
 		case "description":
-			op.Description = value
+			descLines = append(descLines, tag.value)
 		case "id":
-			op.OperationID = value
+			op.OperationID = tag.value
 		case "tags":
-			for _, t := range strings.Split(value, ",") {
-				t = strings.TrimSpace(t)
-				if t != "" {
-					op.Tags = append(op.Tags, t)
-				}
-			}
+			op.Tags = splitTags(tag.value)
 		case "accept":
-			op.Accept = parseMimeTypes(value)
+			op.Accept = parseMIMETypes(tag.value)
 		case "produce":
-			op.Produce = parseMimeTypes(value)
-		case "router":
-			op.Route = parseRouter(value)
-			hasRouter = true
-		case "param":
-			p := parseParam(value)
-			switch p.In {
-			case "body":
-				bodyParams = append(bodyParams, p)
-			case "formdata", "formData":
-				p.In = "formData"
-				formParams = append(formParams, p)
-			default:
-				op.Params = append(op.Params, p)
-			}
-		case "success", "failure":
-			op.Responses = append(op.Responses, parseResponse(value))
-		case "header":
-			headers = append(headers, parseHeader(value))
-		case "security":
-			op.Security = append(op.Security, parseSecurity(value))
+			op.Produce = parseMIMETypes(tag.value)
 		case "deprecated":
 			op.Deprecated = true
-		case "":
-			line := strings.TrimSpace(comment)
-			line = strings.TrimPrefix(line, "//")
-			line = strings.TrimSpace(line)
-			if line != "" {
-				descLines = append(descLines, line)
+
+		case "param":
+			p, err := parseParamTag(tag.value)
+			if err != nil {
+				return op, fmt.Errorf("@Param %w", err)
 			}
-		}
-	}
+			op.Params = append(op.Params, p)
 
-	if !hasRouter {
-		return nil
-	}
-
-	if op.Description == "" && len(descLines) > 0 {
-		op.Description = strings.Join(descLines, " ")
-	}
-
-	// Convert body/formData params into RequestBody
-	if len(bodyParams) > 0 {
-		bp := bodyParams[0]
-		op.RequestBody = &RequestBodyAnnotation{
-			TypeName:    bp.TypeName,
-			Type:        ParseTypeExpr(bp.TypeName),
-			Required:    bp.Required,
-			Description: bp.Description,
-		}
-	} else if len(formParams) > 0 {
-		rb := &RequestBodyAnnotation{IsForm: true, Required: true}
-		for _, fp := range formParams {
-			rb.Fields = append(rb.Fields, FormFieldAnnotation{
-				Name:        fp.Name,
-				TypeName:    fp.TypeName,
-				Required:    fp.Required,
-				Description: fp.Description,
-			})
-		}
-		op.RequestBody = rb
-	}
-
-	// Attach headers to their matching responses
-	for i := range op.Responses {
-		for _, h := range headers {
-			if h.Code == op.Responses[i].Code {
-				op.Responses[i].Headers = append(op.Responses[i].Headers, h)
+		case "success", "failure":
+			resp, err := parseResponseTag(tag.value)
+			if err != nil {
+				return op, fmt.Errorf("@%s %w", tag.name, err)
 			}
+			op.Responses = append(op.Responses, resp)
+
+		case "header":
+			h, err := parseHeaderTag(tag.value)
+			if err != nil {
+				return op, fmt.Errorf("@Header %w", err)
+			}
+			op.Headers = append(op.Headers, h)
+
+		case "security":
+			op.Security = append(op.Security, parseSecurityTag(tag.value))
 		}
 	}
 
-	return op
+	// Description 优先用 @Description；无则回退到普通注释行
+	if len(descLines) > 0 {
+		op.Description = strings.Join(descLines, "\n")
+	} else if len(plainLines) > 0 {
+		op.Description = strings.Join(plainLines, "\n")
+	}
+
+	return op, nil
+}
+
+// splitTags 拆分逗号分隔的标签列表，去除空白。
+func splitTags(value string) []string {
+	var result []string
+	for _, s := range strings.Split(value, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			result = append(result, s)
+		}
+	}
+	return result
 }

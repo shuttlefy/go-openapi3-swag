@@ -1,9 +1,63 @@
 package extractor
 
 import (
+	"fmt"
 	"strings"
 )
 
+// ── 内部类型 ──────────────────────────────────────────────────────────────────
+
+// tagLine 表示一行解析后的注解。
+type tagLine struct {
+	name  string // lowercase，不含 "@"，如 "summary" / "param" / "router"
+	value string // "@" 之后去掉 tagName 的剩余内容，已 TrimSpace
+}
+
+// ── 注释行解析 ────────────────────────────────────────────────────────────────
+
+// parseCommentLines 将 RawFunc.Comments 分为注解行（tagLine）和普通文本行。
+// 标签名不区分大小写，统一转为小写。
+func parseCommentLines(lines []string) (tags []tagLine, plain []string) {
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "@") {
+			if line != "" {
+				plain = append(plain, line)
+			}
+			continue
+		}
+		// 取 "@" 之后的部分，按首个空格分割 tagName 和 value
+		rest := line[1:]
+		idx := strings.IndexAny(rest, " \t")
+		if idx == -1 {
+			tags = append(tags, tagLine{name: strings.ToLower(rest)})
+		} else {
+			tags = append(tags, tagLine{
+				name:  strings.ToLower(rest[:idx]),
+				value: strings.TrimSpace(rest[idx+1:]),
+			})
+		}
+	}
+	return
+}
+
+// ── 通用辅助 ──────────────────────────────────────────────────────────────────
+
+// extractLastQuoted 从字符串末尾提取最后一个 "..." 引号对。
+// 返回 (引号内文本, 引号对之前的文本)。若未找到则 quoted="" rest=s。
+func extractLastQuoted(s string) (quoted, rest string) {
+	end := strings.LastIndex(s, `"`)
+	if end == -1 {
+		return "", s
+	}
+	start := strings.LastIndex(s[:end], `"`)
+	if start == -1 {
+		return "", s
+	}
+	return s[start+1 : end], strings.TrimSpace(s[:start])
+}
+
+// mimeAliases 将简写映射为完整 MIME 类型。
 var mimeAliases = map[string]string{
 	"json":                  "application/json",
 	"xml":                   "application/xml",
@@ -19,267 +73,340 @@ var mimeAliases = map[string]string{
 	"gif":                   "image/gif",
 }
 
-// primitiveTypeSet identifies types that are primitive schema types, not model refs.
-var primitiveTypeSet = map[string]bool{
-	"string": true, "integer": true, "number": true, "boolean": true, "file": true,
-}
-
-// parseTag parses a single comment line like "// @Summary Get user by ID"
-// into a tag name and raw value. Returns ("", "") if the line is not a tag.
-func parseTag(line string) (name, value string) {
-	line = strings.TrimSpace(line)
-	line = strings.TrimPrefix(line, "//")
-	line = strings.TrimSpace(line)
-
-	if !strings.HasPrefix(line, "@") {
-		return "", ""
-	}
-
-	line = line[1:] // strip "@"
-	idx := strings.IndexFunc(line, func(r rune) bool {
-		return r == ' ' || r == '\t'
-	})
-	if idx == -1 {
-		return strings.ToLower(line), ""
-	}
-	return strings.ToLower(line[:idx]), strings.TrimSpace(line[idx+1:])
-}
-
-// parseRouter parses "@Router /users/{id} [get]" value into path and method.
-func parseRouter(value string) RouteInfo {
-	parts := strings.Fields(value)
-	if len(parts) < 2 {
-		return RouteInfo{}
-	}
-	method := strings.Trim(parts[1], "[]")
-	return RouteInfo{
-		Path:   parts[0],
-		Method: strings.ToUpper(method),
-	}
-}
-
-// parseParam parses "@Param name in type required "description"" value.
-// Format: name in type required "description"
-// Extended: name in type required format "description"
-func parseParam(value string) ParamAnnotation {
-	p := ParamAnnotation{}
-	parts, desc := splitQuotedFields(value)
-
-	if len(parts) >= 1 {
-		p.Name = parts[0]
-	}
-	if len(parts) >= 2 {
-		p.In = parts[1]
-	}
-	if len(parts) >= 3 {
-		p.TypeName = parts[2]
-	}
-	if len(parts) >= 4 {
-		p.Required = strings.EqualFold(parts[3], "true")
-	}
-	if len(parts) >= 5 {
-		p.Format = parts[4]
-	}
-	p.Description = desc
-	return p
-}
-
-// splitQuotedFields splits "field1 field2 ... "quoted description"" into
-// unquoted fields and the first quoted string.
-func splitQuotedFields(s string) (fields []string, desc string) {
-	quoteIdx := strings.Index(s, `"`)
-	var fieldPart string
-	if quoteIdx >= 0 {
-		fieldPart = s[:quoteIdx]
-		rest := s[quoteIdx:]
-		endQuote := strings.LastIndex(rest, `"`)
-		if endQuote > 0 {
-			desc = rest[1:endQuote]
-		} else {
-			desc = strings.Trim(rest, `"`)
-		}
-	} else {
-		fieldPart = s
-	}
-	for _, f := range strings.Fields(fieldPart) {
-		fields = append(fields, f)
-	}
-	return
-}
-
-// parseResponse parses "@Success 200 {object} UserResponse "description"" value.
-// Supports: {object}, {array}, {string}, {integer}, {number}, {boolean}, and no-body (code only).
-func parseResponse(value string) ResponseAnnotation {
-	r := ResponseAnnotation{}
-
-	parts, desc := splitQuotedFields(value)
-	r.Description = desc
-
-	if len(parts) == 0 {
-		return r
-	}
-
-	r.Code = parts[0]
-
-	if len(parts) == 1 {
-		return r
-	}
-
-	if len(parts) >= 2 {
-		wrapper := strings.Trim(parts[1], "{}")
-		wrapperLower := strings.ToLower(wrapper)
-		r.IsArray = wrapperLower == "array"
-		r.IsPrimitive = primitiveTypeSet[wrapperLower] && wrapperLower != "file"
-	}
-	if len(parts) >= 3 {
-		r.TypeName = parts[2]
-		r.Type = ParseTypeExpr(parts[2])
-	}
-	return r
-}
-
-// parseHeader parses "@Header code {type} name "description"".
-func parseHeader(value string) ResponseHeaderAnnotation {
-	h := ResponseHeaderAnnotation{}
-	parts, desc := splitQuotedFields(value)
-	h.Description = desc
-
-	if len(parts) >= 1 {
-		h.Code = parts[0]
-	}
-	if len(parts) >= 2 {
-		h.TypeName = strings.Trim(parts[1], "{}")
-	}
-	if len(parts) >= 3 {
-		h.Name = parts[2]
-	}
-	return h
-}
-
-// parseMimeTypes expands MIME type aliases ("json" → "application/json").
-func parseMimeTypes(value string) []string {
+// parseMIMETypes 解析逗号分隔的 MIME 类型列表，自动展开已知别名。
+func parseMIMETypes(value string) []string {
 	var result []string
-	for _, raw := range strings.Split(value, ",") {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
+	for _, part := range strings.Split(value, ",") {
+		mime := strings.TrimSpace(part)
+		if mime == "" {
 			continue
 		}
-		if full, ok := mimeAliases[raw]; ok {
-			result = append(result, full)
+		if expanded, ok := mimeAliases[mime]; ok {
+			result = append(result, expanded)
 		} else {
-			result = append(result, raw)
+			result = append(result, mime)
 		}
 	}
 	return result
 }
 
-// parseSecurity parses "@Security OAuth2[read, write]" or "@Security ApiKeyAuth".
-func parseSecurity(value string) SecurityRequirement {
-	sr := SecurityRequirement{}
-	bracketIdx := strings.Index(value, "[")
-	if bracketIdx < 0 {
-		sr.Name = strings.TrimSpace(value)
-		return sr
+// ── @Param ────────────────────────────────────────────────────────────────────
+
+// parseParamTag 解析 @Param 的 value 部分。
+//
+// 格式：name in type required ["format"] "description"
+// 描述必须用双引号括起（description 可选）。
+func parseParamTag(value string) (ParamAnnotation, error) {
+	desc, rest := extractLastQuoted(value)
+	fields := strings.Fields(rest)
+	if len(fields) < 4 {
+		return ParamAnnotation{}, fmt.Errorf("@Param 至少需要 4 个字段（name in type required），got %q", value)
+	}
+	p := ParamAnnotation{
+		Name:        fields[0],
+		In:          strings.ToLower(fields[1]),
+		TypeName:    fields[2],
+		Required:    strings.ToLower(fields[3]) == "true",
+		Description: desc,
+	}
+	if len(fields) >= 5 {
+		p.Format = fields[4]
+	}
+	return p, nil
+}
+
+// ── @Success / @Failure ───────────────────────────────────────────────────────
+
+// parseResponseTag 解析 @Success / @Failure 的 value 部分。
+//
+// 格式：
+//
+//	code {wrapType} typeName "description"
+//	code "description"            （无 body 响应，如 204）
+func parseResponseTag(value string) (ResponseAnnotation, error) {
+	desc, rest := extractLastQuoted(value)
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ResponseAnnotation{}, fmt.Errorf("@Success/@Failure 缺少状态码，got %q", value)
 	}
 
-	sr.Name = strings.TrimSpace(value[:bracketIdx])
-	scopePart := value[bracketIdx:]
-	scopePart = strings.Trim(scopePart, "[]")
-	for _, s := range strings.Split(scopePart, ",") {
+	resp := ResponseAnnotation{
+		Code:        fields[0],
+		Description: desc,
+	}
+	if len(fields) == 1 {
+		// 仅有状态码，无 body
+		return resp, nil
+	}
+
+	// 解析 {wrapType}
+	for i, f := range fields[1:] {
+		if strings.HasPrefix(f, "{") && strings.HasSuffix(f, "}") {
+			resp.WrapType = strings.ToLower(f[1 : len(f)-1])
+			// 紧随其后的 token 是 typeName
+			modelIdx := i + 2 // fields 偏移：fields[0]=code, [1+i]={wrap}, [2+i]=type
+			if modelIdx < len(fields) {
+				resp.TypeName = fields[modelIdx]
+				resp.IsArray = strings.HasPrefix(resp.TypeName, "[]")
+			}
+			break
+		}
+	}
+	return resp, nil
+}
+
+// ── @Header ───────────────────────────────────────────────────────────────────
+
+// parseHeaderTag 解析 @Header 的 value 部分。
+//
+// 格式：code {type} headerName "description"
+func parseHeaderTag(value string) (HeaderAnnotation, error) {
+	desc, rest := extractLastQuoted(value)
+	fields := strings.Fields(rest)
+	if len(fields) < 3 {
+		return HeaderAnnotation{}, fmt.Errorf("@Header 至少需要 3 个字段（code {type} name），got %q", value)
+	}
+	h := HeaderAnnotation{
+		Code:        fields[0],
+		Description: desc,
+		Name:        fields[2],
+	}
+	if strings.HasPrefix(fields[1], "{") && strings.HasSuffix(fields[1], "}") {
+		h.TypeName = fields[1][1 : len(fields[1])-1]
+	}
+	return h, nil
+}
+
+// ── @Router ───────────────────────────────────────────────────────────────────
+
+// parseRouterTag 解析 @Router 的 value 部分。
+//
+// 格式：/path [method]
+func parseRouterTag(value string) (RouteInfo, error) {
+	lb := strings.LastIndex(value, "[")
+	rb := strings.LastIndex(value, "]")
+	if lb == -1 || rb == -1 || lb > rb {
+		return RouteInfo{}, fmt.Errorf("@Router 格式错误，期望 `/path [method]`，got %q", value)
+	}
+	return RouteInfo{
+		Path:   strings.TrimSpace(value[:lb]),
+		Method: strings.ToUpper(strings.TrimSpace(value[lb+1 : rb])),
+	}, nil
+}
+
+// ── @Security（操作级别） ──────────────────────────────────────────────────────
+
+// parseSecurityTag 解析操作级别 @Security 的 value 部分。
+//
+// 格式：SchemeName 或 SchemeName[scope1, scope2]
+func parseSecurityTag(value string) SecurityRequirement {
+	value = strings.TrimSpace(value)
+	lb := strings.Index(value, "[")
+	if lb == -1 {
+		return SecurityRequirement{Name: value}
+	}
+	rb := strings.Index(value[lb:], "]")
+	if rb == -1 {
+		return SecurityRequirement{Name: value[:lb]}
+	}
+	rb += lb
+	name := strings.TrimSpace(value[:lb])
+	var scopes []string
+	for _, s := range strings.Split(value[lb+1:rb], ",") {
 		s = strings.TrimSpace(s)
 		if s != "" {
-			sr.Scopes = append(sr.Scopes, s)
+			scopes = append(scopes, s)
 		}
 	}
-	return sr
+	return SecurityRequirement{Name: name, Scopes: scopes}
 }
 
-// parseServer parses "@server url description".
-func parseServer(value string) ServerAnnotation {
-	parts := strings.SplitN(value, " ", 2)
-	s := ServerAnnotation{URL: parts[0]}
-	if len(parts) > 1 {
-		s.Description = strings.Trim(parts[1], `"`)
-	}
-	return s
+// ── @tag（全局标签声明） ───────────────────────────────────────────────────────
+
+// parseTagDecl 解析全局 @tag 声明。
+//
+// 格式：tagName "description"
+func parseTagDecl(value string) TagAnnotation {
+	desc, rest := extractLastQuoted(value)
+	return TagAnnotation{Name: strings.TrimSpace(rest), Description: desc}
 }
 
-// ParseTypeExpr parses a possibly-composite type expression.
+// ── @server ───────────────────────────────────────────────────────────────────
+
+// parseServerTag 解析 @server 声明。
 //
-// Simple:      "User"           → TypeExpr{Name:"User"}
-// Array:       "[]User"         → TypeExpr{Name:"[]User"}
-// Composite:   "PageData{data=[]User}"
-//
-//	→ TypeExpr{Name:"PageData", Overrides:[{Field:"data",TypeExpr:"[]User"}]}
-//
-// Multi-field: "PageData{data=[]User,code=int}"
-//
-//	→ TypeExpr{Name:"PageData", Overrides:[..., ...]}
-//
-// Nested:      "Response{data=PageData{items=[]User}}"
-//
-//	→ TypeExpr{Name:"Response", Overrides:[{Field:"data",TypeExpr:"PageData{items=[]User}"}]}
-//
-// The TypeExpr strings stored in FieldOverride.TypeExpr are themselves valid
-// inputs to ParseTypeExpr, enabling recursive schema construction in the builder.
-func ParseTypeExpr(raw string) TypeExpr {
-	braceIdx := strings.Index(raw, "{")
-	if braceIdx < 0 {
-		return TypeExpr{Name: raw}
+// 格式：URL "description" 或 URL（无描述）
+func parseServerTag(value string) ServerAnnotation {
+	desc, rest := extractLastQuoted(value)
+	url := strings.TrimSpace(rest)
+	if url == "" {
+		// 没有引号描述，整个 value 是 URL
+		url = strings.TrimSpace(value)
+		desc = ""
 	}
-
-	baseName := raw[:braceIdx]
-	rest := raw[braceIdx:]
-
-	// Strip outer braces
-	if len(rest) < 2 || rest[0] != '{' || rest[len(rest)-1] != '}' {
-		return TypeExpr{Name: raw}
-	}
-	// Note: override values (ov.TypeExpr strings) are intentionally kept as raw
-	// strings here so that FieldOverride remains a plain data struct.  The builder
-	// calls ParseTypeExpr recursively on each override value when building schemas.
-	inner := rest[1 : len(rest)-1]
-
-	var overrides []FieldOverride
-	for _, pair := range splitOverridePairs(inner) {
-		eqIdx := strings.Index(pair, "=")
-		if eqIdx < 0 {
-			continue
-		}
-		field := strings.TrimSpace(pair[:eqIdx])
-		typExpr := strings.TrimSpace(pair[eqIdx+1:])
-		if field != "" && typExpr != "" {
-			overrides = append(overrides, FieldOverride{
-				Field:    field,
-				TypeExpr: typExpr,
-			})
-		}
-	}
-
-	return TypeExpr{Name: baseName, Overrides: overrides}
+	return ServerAnnotation{URL: url, Description: desc}
 }
 
-// splitOverridePairs splits "data=[]User,code=int" respecting nested braces.
-// e.g. "data=PageData{items=[]User},code=int" → ["data=PageData{items=[]User}", "code=int"]
-func splitOverridePairs(s string) []string {
-	var pairs []string
-	depth := 0
-	start := 0
-	for i, ch := range s {
-		switch ch {
-		case '{':
-			depth++
-		case '}':
-			depth--
-		case ',':
-			if depth == 0 {
-				pairs = append(pairs, s[start:i])
-				start = i + 1
+// ── @securityDefinitions.* ────────────────────────────────────────────────────
+
+// secDefCtx 是 security definition 的构建上下文。
+type secDefCtx struct {
+	defs        []SecurityDefAnnotation
+	lastIdx     map[string]int // schemeKey → index in defs
+	lastFlowIdx map[string]int // schemeKey → flow index in defs[lastIdx].Flows
+}
+
+func newSecDefCtx() *secDefCtx {
+	return &secDefCtx{
+		lastIdx:     make(map[string]int),
+		lastFlowIdx: make(map[string]int),
+	}
+}
+
+// applySecurityDefTag 处理一条 securityDefinitions 标签。
+// tagRest 是 "securitydefinitions." 之后的部分（已小写）。
+func (ctx *secDefCtx) applyTag(tagRest, value string) {
+	schemeKey, attr := parseSecurityDefKey(tagRest)
+	if schemeKey == "" {
+		return
+	}
+
+	if attr == "" {
+		// 创建新的安全方案定义
+		ctx.createDef(schemeKey, value)
+	} else {
+		// 更新已有安全方案定义的属性
+		ctx.applyAttr(schemeKey, attr, value)
+	}
+}
+
+// parseSecurityDefKey 解析 schemeKey 和 attr。
+// 例："apikey" → ("apikey", "")，"apikey.in" → ("apikey", "in")
+// "oauth2.authorizationcode" → ("oauth2.authorizationcode", "")
+// "oauth2.authorizationcode.authorizationurl" → ("oauth2.authorizationcode", "authorizationurl")
+// "oauth2.authorizationcode.scope.read" → ("oauth2.authorizationcode", "scope.read")
+func parseSecurityDefKey(rest string) (schemeKey, attr string) {
+	if strings.HasPrefix(rest, "oauth2.") {
+		after := rest[len("oauth2."):]
+		for _, flow := range []string{"implicit", "password", "clientcredentials", "authorizationcode"} {
+			if after == flow {
+				return "oauth2." + flow, ""
+			}
+			if strings.HasPrefix(after, flow+".") {
+				return "oauth2." + flow, after[len(flow)+1:]
 			}
 		}
+		return "", "" // 未知 oauth2 flow
 	}
-	if start < len(s) {
-		pairs = append(pairs, s[start:])
+
+	parts := strings.SplitN(rest, ".", 2)
+	schemeKey = parts[0]
+	if len(parts) == 2 {
+		attr = parts[1]
 	}
-	return pairs
+	return
+}
+
+func (ctx *secDefCtx) createDef(schemeKey, name string) {
+	var def SecurityDefAnnotation
+	switch schemeKey {
+	case "apikey":
+		def = SecurityDefAnnotation{Name: name, Type: "apiKey"}
+	case "basic":
+		def = SecurityDefAnnotation{Name: name, Type: "http", Scheme: "basic"}
+	case "bearer":
+		def = SecurityDefAnnotation{Name: name, Type: "http", Scheme: "bearer"}
+	case "openidconnect":
+		def = SecurityDefAnnotation{Name: name, Type: "openIdConnect"}
+	default:
+		if strings.HasPrefix(schemeKey, "oauth2.") {
+			flow := oauth2FlowType(strings.TrimPrefix(schemeKey, "oauth2."))
+			def = SecurityDefAnnotation{
+				Name:  name,
+				Type:  "oauth2",
+				Flows: []OAuthFlowAnnotation{{Type: flow, Scopes: map[string]string{}}},
+			}
+			ctx.defs = append(ctx.defs, def)
+			idx := len(ctx.defs) - 1
+			ctx.lastIdx[schemeKey] = idx
+			ctx.lastFlowIdx[schemeKey] = 0
+			return
+		}
+		return // 未知 scheme
+	}
+	ctx.defs = append(ctx.defs, def)
+	ctx.lastIdx[schemeKey] = len(ctx.defs) - 1
+}
+
+func (ctx *secDefCtx) applyAttr(schemeKey, attr, value string) {
+	idx, ok := ctx.lastIdx[schemeKey]
+	if !ok || idx >= len(ctx.defs) {
+		return
+	}
+	def := &ctx.defs[idx]
+
+	switch schemeKey {
+	case "apikey":
+		switch attr {
+		case "in":
+			def.In = value
+		case "name":
+			def.KeyName = value
+		case "description":
+			def.Description = value
+		}
+	case "basic", "bearer":
+		switch attr {
+		case "bearerformat":
+			def.BearerFormat = value
+		case "description":
+			def.Description = value
+		}
+	case "openidconnect":
+		switch attr {
+		case "openidconnecturl":
+			def.OpenIDConnectURL = value
+		case "description":
+			def.Description = value
+		}
+	default:
+		if !strings.HasPrefix(schemeKey, "oauth2.") {
+			return
+		}
+		flowIdx, ok := ctx.lastFlowIdx[schemeKey]
+		if !ok || flowIdx >= len(def.Flows) {
+			return
+		}
+		flow := &def.Flows[flowIdx]
+		switch {
+		case strings.HasPrefix(attr, "scope."):
+			scopeName := attr[len("scope."):]
+			if flow.Scopes == nil {
+				flow.Scopes = map[string]string{}
+			}
+			flow.Scopes[scopeName] = strings.Trim(value, `"`)
+		case attr == "authorizationurl":
+			flow.AuthorizationURL = value
+		case attr == "tokenurl":
+			flow.TokenURL = value
+		case attr == "description":
+			def.Description = value
+		}
+	}
+}
+
+// oauth2FlowType 将小写 key 转为规范的 OAuth2 flow 类型字符串。
+func oauth2FlowType(key string) string {
+	switch key {
+	case "implicit":
+		return "implicit"
+	case "password":
+		return "password"
+	case "clientcredentials":
+		return "clientCredentials"
+	case "authorizationcode":
+		return "authorizationCode"
+	default:
+		return key
+	}
 }

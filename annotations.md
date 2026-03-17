@@ -156,6 +156,39 @@ OAuth2 需要指定流类型。支持的流类型：
 
 写在 API 处理函数的注释中。**必须包含 `@Router`**，否则该函数被忽略。
 
+### 模型名引用规则
+
+注解中凡是需要引用 Go 类型（非原始类型）的地方，**必须**使用以下格式：
+
+```
+包名(别名).[函数名.]类型名
+```
+
+| 部分 | 说明 |
+|------|------|
+| `包名` | import path 的最后一段（如 `models`），**或**显式 import alias（如 `m`） |
+| `(别名)` | 标注形式，表示两者任选其一 |
+| `[函数名.]` | 可选；引用定义在**某函数体内部**的局部 struct 时使用 |
+| `类型名` | Go 导出类型名 |
+
+**原始类型**（`string` / `integer` / `int` / `number` / `boolean` / `file`）直接写，不加包名。
+
+**数组**在类型名前加 `[]`：`[]models.User`
+
+```go
+// 正确 ✓
+// @Success 200 {object} models.User "OK"
+// @Success 200 {array}  []models.User "OK"
+// @Param   body body    models.CreateUserRequest true "body"
+// @Success 200 {object} handlers.CreateUser.Request "OK"   // 函数局部类型
+
+// 错误 ✗ — 缺少包名限定
+// @Success 200 {object} User "OK"
+// @Param   body body    CreateUserRequest true "body"
+```
+
+> **同包类型也须加包名**。注解由工具跨文件解析，无法依赖"当前包"上下文推断。
+
 ### 基本信息
 
 | 标签 | 说明 | 示例 |
@@ -176,10 +209,10 @@ OAuth2 需要指定流类型。支持的流类型：
 
 路径使用 `{param}` 表示路径参数。方法不区分大小写。
 
-| 示例 |
-|------|
-| `// @Router /users/{id} [get]` |
-| `// @Router /users [post]` |
+| 示例　　　　　　　　　　　　　　　　　　　 |
+| --------------------------------------------|
+| `// @Router /users/{id} [get]`　　　　　　 |
+| `// @Router /users [post]`　　　　　　　　 |
 | `// @Router /pets/{petId}/photos [delete]` |
 
 ### 内容类型
@@ -219,7 +252,7 @@ OAuth2 需要指定流类型。支持的流类型：
 |------|------|--------|
 | 名称 | 参数名 | 任意字符串 |
 | 位置 | 参数位置 | `path`, `query`, `header`, `cookie`, `body`, `formData` |
-| 类型 | 数据类型 | `string`, `integer`, `int`, `number`, `boolean`, `file`, 或模型名 |
+| 类型 | 数据类型 | 原始类型：`string`, `integer`, `int`, `number`, `boolean`, `file`；或模型引用：`包名.类型名` |
 | 必填 | 是否必填 | `true`, `false` |
 | 格式 | 类型格式（可选） | `int32`, `int64`, `float`, `double`, `date`, `date-time`, `email`, `uri` 等 |
 | 描述 | 参数描述（引号包裹） | `"User ID"` |
@@ -227,11 +260,12 @@ OAuth2 需要指定流类型。支持的流类型：
 **示例：**
 
 ```go
-// @Param id path int true "User ID"
-// @Param status query string false "Filter status"
-// @Param X-Token header string true "Auth token"
-// @Param limit query integer false int32 "Page size"
-// @Param created_at query string false date-time "Creation date"
+// @Param id         path   int           true  "User ID"
+// @Param status     query  string        false "Filter status"
+// @Param X-Token    header string        true  "Auth token"
+// @Param limit      query  integer       false int32 "Page size"
+// @Param created_at query  string        false date-time "Creation date"
+// @Param filter     query  models.Filter false "Filter object"
 ```
 
 ### 请求体（Request Body）
@@ -241,7 +275,7 @@ OAuth2 需要指定流类型。支持的流类型：
 **JSON Body：**
 
 ```go
-// @Param body body CreateUserRequest true "User to create"
+// @Param body body models.CreateUserRequest true "User to create"
 ```
 
 **Form Data（多字段）：**
@@ -261,24 +295,26 @@ OAuth2 需要指定流类型。支持的流类型：
 // @Failure 状态码 {类型} 模型名 "描述"
 ```
 
-| 类型包装器 | 说明 |
-|------------|------|
-| `{object}` | 对象类型，引用模型 Schema |
-| `{array}` | 数组类型，items 引用模型 Schema |
-| `{string}` | 原始 string 类型 |
-| `{integer}` | 原始 integer 类型 |
-| `{number}` | 原始 number 类型 |
-| `{boolean}` | 原始 boolean 类型 |
+`模型名` 须遵循**模型名引用规则**：`包名(别名).[函数名.]类型名`
+
+| 类型包装器 | 模型名要求 | 说明 |
+|------------|-----------|------|
+| `{object}` | `包名.类型名` | 对象类型，引用模型 Schema |
+| `{array}` | `[]包名.类型名` | 数组类型，items 引用模型 Schema |
+| `{string}` | `string` | 原始 string 类型 |
+| `{integer}` | `integer` | 原始 integer 类型 |
+| `{number}` | `number` | 原始 number 类型 |
+| `{boolean}` | `boolean` | 原始 boolean 类型 |
 
 **示例：**
 
 ```go
-// @Success 200 {object} UserResponse "OK"
-// @Success 200 {array} UserResponse "Users list"
+// @Success 200 {object} models.UserResponse "OK"
+// @Success 200 {array}  []models.UserResponse "Users list"
 // @Success 200 {string} string "A raw string"
-// @Failure 400 {object} ErrorResponse "Bad request"
-// @Failure 404 {object} ErrorResponse "Not found"
-// @Failure 500 {object} ErrorResponse "Internal error"
+// @Failure 400 {object} models.ErrorResponse "Bad request"
+// @Failure 404 {object} models.ErrorResponse "Not found"
+// @Failure 500 {object} models.ErrorResponse "Internal error"
 ```
 
 **无 Body 响应（如 204）：**
@@ -292,15 +328,18 @@ OAuth2 需要指定流类型。支持的流类型：
 当响应或请求体需要使用通用包装类型（如分页），并指定其中某个字段的具体类型时，使用 `{field=Type}` 语法：
 
 ```
-模型名{字段名=具体类型}
-模型名{字段1=类型1,字段2=类型2}
+包名.模型名{字段名=具体类型}
+包名.模型名{字段1=类型1,字段2=类型2}
 ```
+
+**基础模型名**和**字段值中的类型名**均须遵循`包名(别名).[函数名.]类型名`规则；原始类型（`int64` 等）直接写。
 
 **典型场景 — 分页包装：**
 
-假设项目中有通用分页结构：
+假设 `common` 包中有通用分页结构：
 
 ```go
+// common/page.go
 type PageData struct {
     Total int         `json:"total"`
     Page  int         `json:"page"`
@@ -311,26 +350,26 @@ type PageData struct {
 在注解中指定 `data` 字段的实际类型：
 
 ```go
-// @Success 200 {object} PageData{data=[]User} "Paginated users"
-// @Success 200 {object} PageData{data=[]Order} "Paginated orders"
+// @Success 200 {object} common.PageData{data=[]models.User} "Paginated users"
+// @Success 200 {object} common.PageData{data=[]models.Order} "Paginated orders"
 ```
 
 **多字段覆盖：**
 
 ```go
-// @Success 200 {object} PageData{data=[]User,total=int64} "Paginated users"
+// @Success 200 {object} common.PageData{data=[]models.User,total=int64} "Paginated users"
 ```
 
 **嵌套组合：**
 
 ```go
-// @Success 200 {object} Response{data=PageData{items=[]User},meta=Meta} "Wrapped response"
+// @Success 200 {object} common.Response{data=common.PageData{items=[]models.User},meta=common.Meta} "Wrapped response"
 ```
 
 **请求体同样支持：**
 
 ```go
-// @Param body body BatchRequest{items=[]CreateUserRequest} true "Batch create"
+// @Param body body models.BatchRequest{items=[]models.CreateUserRequest} true "Batch create"
 ```
 
 > Builder 阶段会将组合类型展开为内联 Schema：基于基础模型的 `$ref`，用 `allOf` 覆盖指定字段的类型。
@@ -502,11 +541,11 @@ func main() {}
 // @Tags pets
 // @Accept json
 // @Produce json, xml
-// @Param limit query integer false int32 "Max items per page"
+// @Param limit  query integer false int32 "Max items per page"
 // @Param offset query integer false int32 "Offset"
-// @Success 200 {object} PageData{data=[]Pet} "Paginated pets"
+// @Success 200 {object} common.PageData{data=[]models.Pet} "Paginated pets"
 // @Header 200 {string} X-Total-Count "Total number of pets"
-// @Failure 500 {object} Error "Server error"
+// @Failure 500 {object} models.Error "Server error"
 // @Security ApiKeyAuth
 // @Router /pets [get]
 func ListPets() {}
@@ -517,9 +556,9 @@ func ListPets() {}
 // @Tags pets
 // @Accept json
 // @Produce json
-// @Param body body CreatePetRequest true "Pet to create"
-// @Success 201 {object} Pet "Created"
-// @Failure 400 {object} Error "Validation error"
+// @Param body body models.CreatePetRequest true "Pet to create"
+// @Success 201 {object} models.Pet "Created"
+// @Failure 400 {object} models.Error "Validation error"
 // @Security OAuth2[write]
 // @Router /pets [post]
 func CreatePet() {}
@@ -530,7 +569,7 @@ func CreatePet() {}
 // @Tags pets
 // @Param id path integer true int64 "Pet ID"
 // @Success 204 "No Content"
-// @Failure 404 {object} Error "Not found"
+// @Failure 404 {object} models.Error "Not found"
 // @Security ApiKeyAuth
 // @Deprecated
 // @Router /pets/{id} [delete]
@@ -542,10 +581,10 @@ func DeletePet() {}
 // @Tags pets
 // @Accept mpfd
 // @Produce json
-// @Param id path integer true "Pet ID"
-// @Param file formData file true "Photo file"
-// @Param caption formData string false "Photo caption"
-// @Success 200 {object} UploadResult "OK"
+// @Param id      path     integer         true  "Pet ID"
+// @Param file    formData file            true  "Photo file"
+// @Param caption formData string          false "Photo caption"
+// @Success 200 {object} models.UploadResult "OK"
 // @Router /pets/{id}/photos [post]
 func UploadPhoto() {}
 ```

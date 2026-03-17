@@ -6,1968 +6,959 @@ import (
 	"github.com/shuttlefy/go-openapi3-swag/internal/parser"
 )
 
-func buildAST(fns ...parser.RawFunc) *parser.RawAST {
-	return &parser.RawAST{
-		Package:   "main",
-		Functions: fns,
-	}
+// ── parseCommentLines ─────────────────────────────────────────────────────────
+
+func TestParseCommentLines(t *testing.T) {
+	t.Run("mixed tags and plain lines", func(t *testing.T) {
+		lines := []string{
+			"This is a plain description.",
+			"@Summary Get user",
+			"@Tags users, admin",
+			"",
+			"@Router /users [get]",
+		}
+		tags, plain := parseCommentLines(lines)
+		if len(tags) != 3 {
+			t.Fatalf("tags len = %d, want 3", len(tags))
+		}
+		if tags[0].name != "summary" || tags[0].value != "Get user" {
+			t.Errorf("tags[0] = %+v", tags[0])
+		}
+		if tags[2].name != "router" || tags[2].value != "/users [get]" {
+			t.Errorf("tags[2] = %+v", tags[2])
+		}
+		if len(plain) != 1 || plain[0] != "This is a plain description." {
+			t.Errorf("plain = %v", plain)
+		}
+	})
+
+	t.Run("tag names are lowercased", func(t *testing.T) {
+		tags, _ := parseCommentLines([]string{"@Summary text", "@ROUTER /x [get]", "@Tags A"})
+		for _, tag := range tags {
+			for _, ch := range tag.name {
+				if ch >= 'A' && ch <= 'Z' {
+					t.Errorf("tag name %q contains uppercase", tag.name)
+				}
+			}
+		}
+	})
+
+	t.Run("tag with no value", func(t *testing.T) {
+		tags, _ := parseCommentLines([]string{"@Deprecated"})
+		if len(tags) != 1 || tags[0].name != "deprecated" || tags[0].value != "" {
+			t.Errorf("got %+v", tags)
+		}
+	})
+
+	t.Run("empty lines are skipped in plain", func(t *testing.T) {
+		_, plain := parseCommentLines([]string{"", "  ", "hello"})
+		if len(plain) != 1 || plain[0] != "hello" {
+			t.Errorf("plain = %v", plain)
+		}
+	})
 }
 
-func fn(name string, comments ...string) parser.RawFunc {
-	return parser.RawFunc{
-		Name:     name,
-		FilePath: "test.go",
-		Line:     1,
-		Comments: comments,
-	}
-}
+// ── extractLastQuoted ─────────────────────────────────────────────────────────
 
-// ============================================================
-// Tag Parser Tests
-// ============================================================
-
-func TestParseTag_Basic(t *testing.T) {
-	tests := []struct {
-		line     string
-		wantName string
-		wantVal  string
+func TestExtractLastQuoted(t *testing.T) {
+	cases := []struct {
+		input        string
+		wantQuoted   string
+		wantRest     string
 	}{
-		{"// @Summary Get user by ID", "summary", "Get user by ID"},
-		{"//  @Description  Some desc  ", "description", "Some desc"},
-		{"// @Tags users, admin", "tags", "users, admin"},
-		{"// @Deprecated", "deprecated", ""},
-		{"// not a tag", "", ""},
-		{"", "", ""},
-		{"// @Router /users/{id} [get]", "router", "/users/{id} [get]"},
-		{"// @contact.name John", "contact.name", "John"},
-		{"// @license.name MIT", "license.name", "MIT"},
+		{`id path int true "User ID"`, "User ID", "id path int true"},
+		{`limit query integer false int32 "Page size"`, "Page size", "limit query integer false int32"},
+		{`200 {object} models.User "OK"`, "OK", "200 {object} models.User"},
+		{`204 "No Content"`, "No Content", "204"},
+		{`no quotes here`, "", "no quotes here"},
+		{`""`, "", ""},
 	}
-
-	for _, tt := range tests {
-		name, val := parseTag(tt.line)
-		if name != tt.wantName || val != tt.wantVal {
-			t.Errorf("parseTag(%q) = (%q, %q), want (%q, %q)",
-				tt.line, name, val, tt.wantName, tt.wantVal)
+	for _, tc := range cases {
+		q, r := extractLastQuoted(tc.input)
+		if q != tc.wantQuoted || r != tc.wantRest {
+			t.Errorf("extractLastQuoted(%q) = (%q, %q), want (%q, %q)",
+				tc.input, q, r, tc.wantQuoted, tc.wantRest)
 		}
 	}
 }
 
-func TestParseRouter(t *testing.T) {
-	ri := parseRouter("/users/{id} [get]")
-	if ri.Path != "/users/{id}" || ri.Method != "GET" {
-		t.Errorf("got %+v, want /users/{id} GET", ri)
-	}
+// ── parseMIMETypes ────────────────────────────────────────────────────────────
 
-	ri = parseRouter("/pets [post]")
-	if ri.Path != "/pets" || ri.Method != "POST" {
-		t.Errorf("got %+v, want /pets POST", ri)
+func TestParseMIMETypes(t *testing.T) {
+	cases := []struct {
+		input string
+		want  []string
+	}{
+		{"json", []string{"application/json"}},
+		{"json, xml", []string{"application/json", "application/xml"}},
+		{"mpfd", []string{"multipart/form-data"}},
+		{"application/json", []string{"application/json"}}, // already full
+		{"json, application/xml", []string{"application/json", "application/xml"}},
 	}
-}
-
-func TestParseParam(t *testing.T) {
-	p := parseParam(`id path int true "User ID"`)
-	if p.Name != "id" || p.In != "path" || p.TypeName != "int" || !p.Required || p.Description != "User ID" {
-		t.Errorf("got %+v", p)
-	}
-
-	p = parseParam(`status query string false "Filter status"`)
-	if p.Name != "status" || p.In != "query" || p.Required {
-		t.Errorf("got %+v", p)
-	}
-
-	p = parseParam(`body body CreateUserRequest true "User to create"`)
-	if p.Name != "body" || p.In != "body" || p.TypeName != "CreateUserRequest" {
-		t.Errorf("got %+v", p)
-	}
-}
-
-func TestParseParam_WithFormat(t *testing.T) {
-	p := parseParam(`id path integer true int64 "User ID"`)
-	if p.Name != "id" || p.TypeName != "integer" || p.Format != "int64" {
-		t.Errorf("got %+v", p)
-	}
-
-	p = parseParam(`created_at query string false date-time "Creation date"`)
-	if p.Format != "date-time" {
-		t.Errorf("format = %q, want date-time", p.Format)
-	}
-}
-
-func TestParseResponse(t *testing.T) {
-	r := parseResponse(`200 {object} UserResponse "OK"`)
-	if r.Code != "200" || r.TypeName != "UserResponse" || r.IsArray || r.Description != "OK" {
-		t.Errorf("got %+v", r)
-	}
-
-	r = parseResponse(`200 {array} UserResponse "List of users"`)
-	if r.Code != "200" || r.TypeName != "UserResponse" || !r.IsArray || r.Description != "List of users" {
-		t.Errorf("got %+v", r)
-	}
-
-	r = parseResponse(`404 {object} ErrorResponse "Not found"`)
-	if r.Code != "404" || r.TypeName != "ErrorResponse" {
-		t.Errorf("got %+v", r)
-	}
-}
-
-func TestParseResponse_Primitive(t *testing.T) {
-	r := parseResponse(`200 {string} string "A raw string"`)
-	if !r.IsPrimitive {
-		t.Errorf("expected IsPrimitive=true, got %+v", r)
-	}
-
-	r = parseResponse(`200 {integer} int "A count"`)
-	if !r.IsPrimitive {
-		t.Errorf("expected IsPrimitive=true for integer, got %+v", r)
-	}
-
-	r = parseResponse(`200 {object} Foo "Not primitive"`)
-	if r.IsPrimitive {
-		t.Errorf("expected IsPrimitive=false for object")
-	}
-}
-
-func TestParseResponse_NoBody(t *testing.T) {
-	r := parseResponse(`204 "No Content"`)
-	if r.Code != "204" || r.TypeName != "" || r.Description != "No Content" {
-		t.Errorf("got %+v", r)
-	}
-}
-
-func TestParseHeader(t *testing.T) {
-	h := parseHeader(`200 {string} X-Request-Id "Request ID"`)
-	if h.Code != "200" || h.TypeName != "string" || h.Name != "X-Request-Id" || h.Description != "Request ID" {
-		t.Errorf("got %+v", h)
-	}
-}
-
-func TestParseMimeTypes(t *testing.T) {
-	result := parseMimeTypes("json, xml")
-	if len(result) != 2 || result[0] != "application/json" || result[1] != "application/xml" {
-		t.Errorf("got %v", result)
-	}
-
-	result = parseMimeTypes("application/json")
-	if len(result) != 1 || result[0] != "application/json" {
-		t.Errorf("got %v", result)
-	}
-
-	result = parseMimeTypes("mpfd")
-	if len(result) != 1 || result[0] != "multipart/form-data" {
-		t.Errorf("got %v", result)
-	}
-}
-
-func TestParseSecurity(t *testing.T) {
-	sr := parseSecurity("ApiKeyAuth")
-	if sr.Name != "ApiKeyAuth" || len(sr.Scopes) != 0 {
-		t.Errorf("got %+v", sr)
-	}
-
-	sr = parseSecurity("OAuth2[read, write]")
-	if sr.Name != "OAuth2" || len(sr.Scopes) != 2 || sr.Scopes[0] != "read" || sr.Scopes[1] != "write" {
-		t.Errorf("got %+v", sr)
-	}
-
-	sr = parseSecurity("OAuth2[admin]")
-	if sr.Name != "OAuth2" || len(sr.Scopes) != 1 || sr.Scopes[0] != "admin" {
-		t.Errorf("got %+v", sr)
-	}
-}
-
-func TestParseServer(t *testing.T) {
-	s := parseServer(`https://api.example.com "Production server"`)
-	if s.URL != "https://api.example.com" || s.Description != "Production server" {
-		t.Errorf("got %+v", s)
-	}
-
-	s = parseServer("http://localhost:8080")
-	if s.URL != "http://localhost:8080" || s.Description != "" {
-		t.Errorf("got %+v", s)
-	}
-}
-
-// ============================================================
-// Extractor Tests — Operations (basic, preserved from before)
-// ============================================================
-
-func TestExtract_SingleRoute(t *testing.T) {
-	ast := buildAST(fn("GetUser",
-		"// @Summary Get user by ID",
-		"// @Description Returns a single user",
-		"// @Tags users",
-		"// @Accept json",
-		"// @Produce json",
-		"// @Param id path int true \"User ID\"",
-		"// @Success 200 {object} UserResponse \"OK\"",
-		"// @Failure 404 {object} ErrorResponse \"Not found\"",
-		"// @Router /users/{id} [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(result.Operations) != 1 {
-		t.Fatalf("expected 1 operation, got %d", len(result.Operations))
-	}
-
-	op := result.Operations[0]
-	if op.Summary != "Get user by ID" {
-		t.Errorf("summary = %q", op.Summary)
-	}
-	if op.Description != "Returns a single user" {
-		t.Errorf("description = %q", op.Description)
-	}
-	if op.Route.Path != "/users/{id}" || op.Route.Method != "GET" {
-		t.Errorf("route = %+v", op.Route)
-	}
-	if len(op.Tags) != 1 || op.Tags[0] != "users" {
-		t.Errorf("tags = %v", op.Tags)
-	}
-	if len(op.Accept) != 1 || op.Accept[0] != "application/json" {
-		t.Errorf("accept = %v", op.Accept)
-	}
-	if len(op.Produce) != 1 || op.Produce[0] != "application/json" {
-		t.Errorf("produce = %v", op.Produce)
-	}
-	if len(op.Params) != 1 {
-		t.Fatalf("expected 1 param, got %d", len(op.Params))
-	}
-	if op.Params[0].Name != "id" || op.Params[0].In != "path" || !op.Params[0].Required {
-		t.Errorf("param = %+v", op.Params[0])
-	}
-	if len(op.Responses) != 2 {
-		t.Fatalf("expected 2 responses, got %d", len(op.Responses))
-	}
-}
-
-func TestExtract_MultipleParams(t *testing.T) {
-	ast := buildAST(fn("SearchUsers",
-		"// @Summary Search users",
-		"// @Param q query string true \"Search query\"",
-		"// @Param page query int false \"Page number\"",
-		"// @Param limit query int false \"Page size\"",
-		"// @Success 200 {array} UserResponse \"Users\"",
-		"// @Router /users [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	op := result.Operations[0]
-	if len(op.Params) != 3 {
-		t.Fatalf("expected 3 params, got %d", len(op.Params))
-	}
-}
-
-func TestExtract_MultipleResponses(t *testing.T) {
-	ast := buildAST(fn("UpdateUser",
-		"// @Summary Update user",
-		"// @Success 200 {object} UserResponse \"Updated\"",
-		"// @Failure 400 {object} ErrorResponse \"Bad request\"",
-		"// @Failure 404 {object} ErrorResponse \"Not found\"",
-		"// @Failure 500 {object} ErrorResponse \"Internal error\"",
-		"// @Router /users/{id} [put]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	op := result.Operations[0]
-	if len(op.Responses) != 4 {
-		t.Fatalf("expected 4 responses, got %d", len(op.Responses))
-	}
-	codes := []string{"200", "400", "404", "500"}
-	for i, c := range codes {
-		if op.Responses[i].Code != c {
-			t.Errorf("response[%d].Code = %q, want %q", i, op.Responses[i].Code, c)
+	for _, tc := range cases {
+		got := parseMIMETypes(tc.input)
+		if len(got) != len(tc.want) {
+			t.Errorf("parseMIMETypes(%q) len=%d, want %d: %v", tc.input, len(got), len(tc.want), got)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("parseMIMETypes(%q)[%d] = %q, want %q", tc.input, i, got[i], tc.want[i])
+			}
 		}
 	}
 }
 
-func TestExtract_SkipNoRouter(t *testing.T) {
-	ast := buildAST(
-		fn("HelperFunc",
-			"// @Summary This is a helper",
-		),
-		fn("GetUser",
-			"// @Summary Get user",
-			"// @Router /users/{id} [get]",
-		),
+// ── parseParamTag ─────────────────────────────────────────────────────────────
+
+func TestParseParamTag(t *testing.T) {
+	t.Run("path param no format", func(t *testing.T) {
+		p, err := parseParamTag(`id path int true "User ID"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Name != "id" || p.In != "path" || p.TypeName != "int" {
+			t.Errorf("got %+v", p)
+		}
+		if !p.Required {
+			t.Error("Required should be true")
+		}
+		if p.Description != "User ID" {
+			t.Errorf("Description = %q", p.Description)
+		}
+		if p.Format != "" {
+			t.Errorf("Format should be empty, got %q", p.Format)
+		}
+	})
+
+	t.Run("query param with format", func(t *testing.T) {
+		p, err := parseParamTag(`limit query integer false int32 "Page size"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Name != "limit" || p.In != "query" || p.TypeName != "integer" {
+			t.Errorf("got %+v", p)
+		}
+		if p.Required {
+			t.Error("Required should be false")
+		}
+		if p.Format != "int32" {
+			t.Errorf("Format = %q, want int32", p.Format)
+		}
+	})
+
+	t.Run("body param with model type", func(t *testing.T) {
+		p, err := parseParamTag(`body body models.CreateUserRequest true "Request body"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.In != "body" || p.TypeName != "models.CreateUserRequest" {
+			t.Errorf("got %+v", p)
+		}
+	})
+
+	t.Run("date-time format", func(t *testing.T) {
+		p, err := parseParamTag(`created_at query string false date-time "Creation date"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Format != "date-time" {
+			t.Errorf("Format = %q, want date-time", p.Format)
+		}
+	})
+
+	t.Run("in is lowercased", func(t *testing.T) {
+		p, err := parseParamTag(`X-Token Header string true "Auth token"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.In != "header" {
+			t.Errorf("In = %q, want header", p.In)
+		}
+	})
+
+	t.Run("too few fields returns error", func(t *testing.T) {
+		_, err := parseParamTag(`id path`)
+		if err == nil {
+			t.Error("expected error for too few fields")
+		}
+	})
+}
+
+// ── parseResponseTag ──────────────────────────────────────────────────────────
+
+func TestParseResponseTag(t *testing.T) {
+	t.Run("object response", func(t *testing.T) {
+		r, err := parseResponseTag(`200 {object} models.UserResponse "OK"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Code != "200" || r.WrapType != "object" || r.TypeName != "models.UserResponse" {
+			t.Errorf("got %+v", r)
+		}
+		if r.IsArray {
+			t.Error("IsArray should be false")
+		}
+		if r.Description != "OK" {
+			t.Errorf("Description = %q", r.Description)
+		}
+	})
+
+	t.Run("array response", func(t *testing.T) {
+		r, err := parseResponseTag(`200 {array} []models.User "Users list"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.WrapType != "array" || r.TypeName != "[]models.User" {
+			t.Errorf("got %+v", r)
+		}
+		if !r.IsArray {
+			t.Error("IsArray should be true")
+		}
+	})
+
+	t.Run("no-body response (204)", func(t *testing.T) {
+		r, err := parseResponseTag(`204 "No Content"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Code != "204" || r.WrapType != "" || r.TypeName != "" {
+			t.Errorf("got %+v", r)
+		}
+		if r.Description != "No Content" {
+			t.Errorf("Description = %q", r.Description)
+		}
+	})
+
+	t.Run("composite type in response", func(t *testing.T) {
+		r, err := parseResponseTag(`200 {object} common.PageData{data=[]models.User} "Paged"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.TypeName != "common.PageData{data=[]models.User}" {
+			t.Errorf("TypeName = %q", r.TypeName)
+		}
+	})
+
+	t.Run("missing status code returns error", func(t *testing.T) {
+		_, err := parseResponseTag(``)
+		if err == nil {
+			t.Error("expected error for empty value")
+		}
+	})
+}
+
+// ── parseRouterTag ────────────────────────────────────────────────────────────
+
+func TestParseRouterTag(t *testing.T) {
+	cases := []struct {
+		input      string
+		wantPath   string
+		wantMethod string
+		wantErr    bool
+	}{
+		{"/users [get]", "/users", "GET", false},
+		{"/users/{id} [DELETE]", "/users/{id}", "DELETE", false},
+		{"/pets/{petId}/photos [post]", "/pets/{petId}/photos", "POST", false},
+		{"no brackets", "", "", true},
+		{"/path []", "/path", "", false},
+	}
+	for _, tc := range cases {
+		r, err := parseRouterTag(tc.input)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parseRouterTag(%q): expected error", tc.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseRouterTag(%q): unexpected error: %v", tc.input, err)
+			continue
+		}
+		if r.Path != tc.wantPath || r.Method != tc.wantMethod {
+			t.Errorf("parseRouterTag(%q) = %+v, want {%q, %q}", tc.input, r, tc.wantPath, tc.wantMethod)
+		}
+	}
+}
+
+// ── parseSecurityTag ──────────────────────────────────────────────────────────
+
+func TestParseSecurityTag(t *testing.T) {
+	t.Run("no scopes", func(t *testing.T) {
+		s := parseSecurityTag("ApiKeyAuth")
+		if s.Name != "ApiKeyAuth" || len(s.Scopes) != 0 {
+			t.Errorf("got %+v", s)
+		}
+	})
+
+	t.Run("with scopes", func(t *testing.T) {
+		s := parseSecurityTag("OAuth2[read, write]")
+		if s.Name != "OAuth2" {
+			t.Errorf("Name = %q, want OAuth2", s.Name)
+		}
+		if len(s.Scopes) != 2 || s.Scopes[0] != "read" || s.Scopes[1] != "write" {
+			t.Errorf("Scopes = %v", s.Scopes)
+		}
+	})
+
+	t.Run("single scope", func(t *testing.T) {
+		s := parseSecurityTag("BearerAuth[admin]")
+		if len(s.Scopes) != 1 || s.Scopes[0] != "admin" {
+			t.Errorf("Scopes = %v", s.Scopes)
+		}
+	})
+}
+
+// ── parseHeaderTag ────────────────────────────────────────────────────────────
+
+func TestParseHeaderTag(t *testing.T) {
+	t.Run("string header", func(t *testing.T) {
+		h, err := parseHeaderTag(`200 {string} X-Request-Id "Request tracking ID"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Code != "200" || h.TypeName != "string" || h.Name != "X-Request-Id" {
+			t.Errorf("got %+v", h)
+		}
+		if h.Description != "Request tracking ID" {
+			t.Errorf("Description = %q", h.Description)
+		}
+	})
+
+	t.Run("integer header", func(t *testing.T) {
+		h, err := parseHeaderTag(`200 {integer} X-RateLimit-Remaining "Remaining requests"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.TypeName != "integer" || h.Name != "X-RateLimit-Remaining" {
+			t.Errorf("got %+v", h)
+		}
+	})
+
+	t.Run("too few fields returns error", func(t *testing.T) {
+		_, err := parseHeaderTag(`200 {string}`)
+		if err == nil {
+			t.Error("expected error")
+		}
+	})
+}
+
+// ── parseTagDecl / parseServerTag ─────────────────────────────────────────────
+
+func TestParseTagDecl(t *testing.T) {
+	tag := parseTagDecl(`pets "Everything about your Pets"`)
+	if tag.Name != "pets" || tag.Description != "Everything about your Pets" {
+		t.Errorf("got %+v", tag)
+	}
+}
+
+func TestParseServerTag(t *testing.T) {
+	t.Run("with description", func(t *testing.T) {
+		s := parseServerTag(`https://api.example.com "Production"`)
+		if s.URL != "https://api.example.com" || s.Description != "Production" {
+			t.Errorf("got %+v", s)
+		}
+	})
+
+	t.Run("without description", func(t *testing.T) {
+		s := parseServerTag("http://localhost:8080")
+		if s.URL != "http://localhost:8080" || s.Description != "" {
+			t.Errorf("got %+v", s)
+		}
+	})
+}
+
+// ── parseSecurityDefKey ───────────────────────────────────────────────────────
+
+func TestParseSecurityDefKey(t *testing.T) {
+	cases := []struct {
+		input         string
+		wantSchemeKey string
+		wantAttr      string
+	}{
+		{"apikey", "apikey", ""},
+		{"apikey.in", "apikey", "in"},
+		{"apikey.name", "apikey", "name"},
+		{"apikey.description", "apikey", "description"},
+		{"basic", "basic", ""},
+		{"bearer", "bearer", ""},
+		{"bearer.bearerformat", "bearer", "bearerformat"},
+		{"openidconnect", "openidconnect", ""},
+		{"openidconnect.openidconnecturl", "openidconnect", "openidconnecturl"},
+		{"oauth2.authorizationcode", "oauth2.authorizationcode", ""},
+		{"oauth2.authorizationcode.authorizationurl", "oauth2.authorizationcode", "authorizationurl"},
+		{"oauth2.authorizationcode.tokenurl", "oauth2.authorizationcode", "tokenurl"},
+		{"oauth2.authorizationcode.scope.read", "oauth2.authorizationcode", "scope.read"},
+		{"oauth2.implicit", "oauth2.implicit", ""},
+		{"oauth2.password", "oauth2.password", ""},
+		{"oauth2.clientcredentials", "oauth2.clientcredentials", ""},
+		{"oauth2.unknown", "", ""}, // 未知 flow
+	}
+	for _, tc := range cases {
+		sk, attr := parseSecurityDefKey(tc.input)
+		if sk != tc.wantSchemeKey || attr != tc.wantAttr {
+			t.Errorf("parseSecurityDefKey(%q) = (%q, %q), want (%q, %q)",
+				tc.input, sk, attr, tc.wantSchemeKey, tc.wantAttr)
+		}
+	}
+}
+
+// ── secDefCtx（security definition 构建） ─────────────────────────────────────
+
+func TestSecDefCtx_APIKey(t *testing.T) {
+	ctx := newSecDefCtx()
+	ctx.applyTag("apikey", "ApiKeyAuth")
+	ctx.applyTag("apikey.in", "header")
+	ctx.applyTag("apikey.name", "X-API-Key")
+	ctx.applyTag("apikey.description", "API key auth")
+
+	if len(ctx.defs) != 1 {
+		t.Fatalf("defs len = %d, want 1", len(ctx.defs))
+	}
+	d := ctx.defs[0]
+	if d.Name != "ApiKeyAuth" || d.Type != "apiKey" {
+		t.Errorf("Name/Type = %q/%q", d.Name, d.Type)
+	}
+	if d.In != "header" || d.KeyName != "X-API-Key" {
+		t.Errorf("In=%q KeyName=%q", d.In, d.KeyName)
+	}
+	if d.Description != "API key auth" {
+		t.Errorf("Description = %q", d.Description)
+	}
+}
+
+func TestSecDefCtx_Basic(t *testing.T) {
+	ctx := newSecDefCtx()
+	ctx.applyTag("basic", "BasicAuth")
+
+	if len(ctx.defs) != 1 {
+		t.Fatalf("defs len = %d, want 1", len(ctx.defs))
+	}
+	d := ctx.defs[0]
+	if d.Name != "BasicAuth" || d.Type != "http" || d.Scheme != "basic" {
+		t.Errorf("got %+v", d)
+	}
+}
+
+func TestSecDefCtx_Bearer(t *testing.T) {
+	ctx := newSecDefCtx()
+	ctx.applyTag("bearer", "BearerAuth")
+	ctx.applyTag("bearer.bearerformat", "JWT")
+
+	d := ctx.defs[0]
+	if d.Type != "http" || d.Scheme != "bearer" || d.BearerFormat != "JWT" {
+		t.Errorf("got %+v", d)
+	}
+}
+
+func TestSecDefCtx_OpenIDConnect(t *testing.T) {
+	ctx := newSecDefCtx()
+	ctx.applyTag("openidconnect", "MyOIDC")
+	ctx.applyTag("openidconnect.openidconnecturl", "https://example.com/.well-known/openid-configuration")
+
+	d := ctx.defs[0]
+	if d.Type != "openIdConnect" || d.OpenIDConnectURL != "https://example.com/.well-known/openid-configuration" {
+		t.Errorf("got %+v", d)
+	}
+}
+
+func TestSecDefCtx_OAuth2AuthorizationCode(t *testing.T) {
+	ctx := newSecDefCtx()
+	ctx.applyTag("oauth2.authorizationcode", "OAuth2")
+	ctx.applyTag("oauth2.authorizationcode.authorizationurl", "https://example.com/oauth/authorize")
+	ctx.applyTag("oauth2.authorizationcode.tokenurl", "https://example.com/oauth/token")
+	ctx.applyTag("oauth2.authorizationcode.scope.read", `"Read access"`)
+	ctx.applyTag("oauth2.authorizationcode.scope.write", `"Write access"`)
+
+	if len(ctx.defs) != 1 {
+		t.Fatalf("defs len = %d, want 1", len(ctx.defs))
+	}
+	d := ctx.defs[0]
+	if d.Name != "OAuth2" || d.Type != "oauth2" {
+		t.Errorf("Name/Type = %q/%q", d.Name, d.Type)
+	}
+	if len(d.Flows) != 1 {
+		t.Fatalf("Flows len = %d, want 1", len(d.Flows))
+	}
+	flow := d.Flows[0]
+	if flow.Type != "authorizationCode" {
+		t.Errorf("flow.Type = %q, want authorizationCode", flow.Type)
+	}
+	if flow.AuthorizationURL != "https://example.com/oauth/authorize" {
+		t.Errorf("AuthorizationURL = %q", flow.AuthorizationURL)
+	}
+	if flow.TokenURL != "https://example.com/oauth/token" {
+		t.Errorf("TokenURL = %q", flow.TokenURL)
+	}
+	if flow.Scopes["read"] != "Read access" || flow.Scopes["write"] != "Write access" {
+		t.Errorf("Scopes = %v", flow.Scopes)
+	}
+}
+
+func TestSecDefCtx_MultipleSchemes(t *testing.T) {
+	ctx := newSecDefCtx()
+	ctx.applyTag("apikey", "ApiKeyAuth")
+	ctx.applyTag("apikey.in", "header")
+	ctx.applyTag("bearer", "BearerAuth")
+	ctx.applyTag("bearer.bearerformat", "JWT")
+
+	if len(ctx.defs) != 2 {
+		t.Fatalf("defs len = %d, want 2", len(ctx.defs))
+	}
+	if ctx.defs[0].Name != "ApiKeyAuth" || ctx.defs[1].Name != "BearerAuth" {
+		t.Errorf("got %v", ctx.defs)
+	}
+}
+
+// ── GoExtractor.Extract（集成） ───────────────────────────────────────────────
+
+// makeFile 构造单文件 RawFile，pkg 为包名，fns 为函数列表。
+func makeFile(pkg string, fns ...parser.RawFunc) *parser.RawFile {
+	return &parser.RawFile{Package: pkg, FilePath: "/fake/" + pkg + ".go", Functions: fns}
+}
+
+// makeFunc 构造一个带注释的 RawFunc。
+func makeFunc(name string, line int, comments ...string) parser.RawFunc {
+	return parser.RawFunc{Name: name, FilePath: "/fake/file.go", Line: line, Comments: comments}
+}
+
+func TestExtract_GlobalAnnotation(t *testing.T) {
+	fn := makeFunc("main", 1,
+		"@title Pet Store API",
+		"@version 2.0.0",
+		"@description A sample pet store server.",
+		"@termsOfService https://example.com/terms",
+		"@contact.name API Support",
+		"@contact.email support@example.com",
+		"@contact.url https://www.example.com/support",
+		"@license.name Apache 2.0",
+		"@license.url https://www.apache.org/licenses/LICENSE-2.0.html",
+		`@server https://api.petstore.com "Production"`,
+		"@server http://localhost:8080",
+		`@externalDocs.url https://example.com/docs`,
+		`@externalDocs.description Find out more`,
+		`@tag pets "Everything about Pets"`,
+		`@tag users "User operations"`,
+		"@host api.legacy.com",
+		"@BasePath /api/v1",
+		"@schemes http https",
 	)
 
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(result.Operations) != 1 {
-		t.Fatalf("expected 1 operation (skip no-router), got %d", len(result.Operations))
-	}
-	if result.Operations[0].FuncName != "GetUser" {
-		t.Errorf("expected GetUser, got %s", result.Operations[0].FuncName)
-	}
-}
-
-func TestExtract_OperationID(t *testing.T) {
-	ast := buildAST(fn("ListPets",
-		"// @Summary List pets",
-		"// @ID listPets",
-		"// @Router /pets [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if result.Operations[0].OperationID != "listPets" {
-		t.Errorf("operationId = %q", result.Operations[0].OperationID)
-	}
-}
-
-func TestExtract_Deprecated(t *testing.T) {
-	ast := buildAST(fn("OldEndpoint",
-		"// @Summary Old endpoint",
-		"// @Deprecated",
-		"// @Router /old [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !result.Operations[0].Deprecated {
-		t.Error("expected deprecated=true")
-	}
-}
-
-func TestExtract_MultipleTags(t *testing.T) {
-	ast := buildAST(fn("AdminCreateUser",
-		"// @Summary Admin creates user",
-		"// @Tags admin, users",
-		"// @Router /admin/users [post]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	tags := result.Operations[0].Tags
-	if len(tags) != 2 || tags[0] != "admin" || tags[1] != "users" {
-		t.Errorf("tags = %v", tags)
-	}
-}
-
-func TestExtract_ArrayResponse(t *testing.T) {
-	ast := buildAST(fn("ListUsers",
-		"// @Summary List users",
-		"// @Success 200 {array} UserResponse \"Users list\"",
-		"// @Router /users [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resp := result.Operations[0].Responses[0]
-	if !resp.IsArray {
-		t.Error("expected IsArray=true")
-	}
-	if resp.TypeName != "UserResponse" {
-		t.Errorf("typeName = %q", resp.TypeName)
-	}
-}
-
-func TestExtract_DescriptionFallback(t *testing.T) {
-	ast := buildAST(fn("GetUser",
-		"// GetUser retrieves a user",
-		"// from the database by ID.",
-		"// @Summary Get user",
-		"// @Router /users/{id} [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	op := result.Operations[0]
-	if op.Description != "GetUser retrieves a user from the database by ID." {
-		t.Errorf("description fallback = %q", op.Description)
-	}
-}
-
-func TestExtract_EmptyAST(t *testing.T) {
-	ast := buildAST()
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(result.Operations) != 0 {
-		t.Errorf("expected 0 operations, got %d", len(result.Operations))
-	}
-}
-
-func TestExtract_FuncMetadata(t *testing.T) {
-	f := parser.RawFunc{
-		Name:     "GetUser",
-		FilePath: "handler/user.go",
-		Line:     42,
-		Comments: []string{
-			"// @Summary Get user",
-			"// @Router /users/{id} [get]",
-		},
-	}
-	ast := buildAST(f)
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	op := result.Operations[0]
-	if op.FuncName != "GetUser" {
-		t.Errorf("funcName = %q", op.FuncName)
-	}
-	if op.FilePath != "handler/user.go" {
-		t.Errorf("filePath = %q", op.FilePath)
-	}
-	if op.Line != 42 {
-		t.Errorf("line = %d", op.Line)
-	}
-}
-
-// ============================================================
-// Extractor Tests — Global Annotations
-// ============================================================
-
-func TestExtract_GlobalAnnotations(t *testing.T) {
-	ast := buildAST(fn("main",
-		"// @title Pet Store API",
-		"// @version 1.0",
-		"// @description A pet store server",
-		"// @host localhost:8080",
-		"// @BasePath /api/v1",
-		"// @schemes http https",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("main", fn)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	g := result.Global
 	if g.Title != "Pet Store API" {
-		t.Errorf("title = %q", g.Title)
+		t.Errorf("Title = %q", g.Title)
 	}
-	if g.Version != "1.0" {
-		t.Errorf("version = %q", g.Version)
+	if g.Version != "2.0.0" {
+		t.Errorf("Version = %q", g.Version)
 	}
-	if g.Description != "A pet store server" {
-		t.Errorf("description = %q", g.Description)
+	if g.Description != "A sample pet store server." {
+		t.Errorf("Description = %q", g.Description)
 	}
-	if g.Host != "localhost:8080" {
-		t.Errorf("host = %q", g.Host)
+	if g.TermsOfService != "https://example.com/terms" {
+		t.Errorf("TermsOfService = %q", g.TermsOfService)
 	}
-	if g.BasePath != "/api/v1" {
-		t.Errorf("basePath = %q", g.BasePath)
+	if g.Contact.Name != "API Support" || g.Contact.Email != "support@example.com" {
+		t.Errorf("Contact = %+v", g.Contact)
 	}
-	if len(g.Schemes) != 2 || g.Schemes[0] != "http" || g.Schemes[1] != "https" {
-		t.Errorf("schemes = %v", g.Schemes)
+	if g.License.Name != "Apache 2.0" {
+		t.Errorf("License = %+v", g.License)
+	}
+	if len(g.Servers) != 2 || g.Servers[0].URL != "https://api.petstore.com" || g.Servers[0].Description != "Production" {
+		t.Errorf("Servers = %+v", g.Servers)
+	}
+	if g.Servers[1].URL != "http://localhost:8080" || g.Servers[1].Description != "" {
+		t.Errorf("Servers[1] = %+v", g.Servers[1])
+	}
+	if g.ExternalDocs.URL != "https://example.com/docs" || g.ExternalDocs.Description != "Find out more" {
+		t.Errorf("ExternalDocs = %+v", g.ExternalDocs)
+	}
+	if len(g.Tags) != 2 || g.Tags[0].Name != "pets" || g.Tags[1].Name != "users" {
+		t.Errorf("Tags = %+v", g.Tags)
+	}
+	if g.Host != "api.legacy.com" || g.BasePath != "/api/v1" {
+		t.Errorf("Host/BasePath = %q/%q", g.Host, g.BasePath)
+	}
+	if len(g.Schemes) != 2 {
+		t.Errorf("Schemes = %v", g.Schemes)
 	}
 }
 
-func TestExtract_GlobalTags(t *testing.T) {
-	ast := buildAST(fn("main",
-		"// @title My API",
-		"// @version 1.0",
-		`// @tag users "User management"`,
-		`// @tag pets "Pet operations"`,
-	))
+func TestExtract_GlobalSecurityDefs(t *testing.T) {
+	fn := makeFunc("main", 1,
+		"@securityDefinitions.apikey ApiKeyAuth",
+		"@securityDefinitions.apikey.in header",
+		"@securityDefinitions.apikey.name X-API-Key",
+		"@securityDefinitions.bearer BearerAuth",
+		"@securityDefinitions.bearer.bearerFormat JWT",
+		"@securityDefinitions.oauth2.authorizationCode OAuth2",
+		"@securityDefinitions.oauth2.authorizationCode.authorizationUrl https://example.com/oauth/authorize",
+		"@securityDefinitions.oauth2.authorizationCode.tokenUrl https://example.com/oauth/token",
+		`@securityDefinitions.oauth2.authorizationCode.scope.read "Read access"`,
+		`@securityDefinitions.oauth2.authorizationCode.scope.write "Write access"`,
+	)
 
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("main", fn)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(result.Global.Tags) != 2 {
-		t.Fatalf("expected 2 tags, got %d", len(result.Global.Tags))
+	defs := result.Global.SecurityDefs
+	if len(defs) != 3 {
+		t.Fatalf("SecurityDefs len = %d, want 3", len(defs))
 	}
-	if result.Global.Tags[0].Name != "users" || result.Global.Tags[0].Description != "User management" {
-		t.Errorf("tag[0] = %+v", result.Global.Tags[0])
+
+	apiKey := defs[0]
+	if apiKey.Name != "ApiKeyAuth" || apiKey.Type != "apiKey" || apiKey.In != "header" || apiKey.KeyName != "X-API-Key" {
+		t.Errorf("apiKey = %+v", apiKey)
 	}
-	if result.Global.Tags[1].Name != "pets" || result.Global.Tags[1].Description != "Pet operations" {
-		t.Errorf("tag[1] = %+v", result.Global.Tags[1])
+
+	bearer := defs[1]
+	if bearer.Name != "BearerAuth" || bearer.Scheme != "bearer" || bearer.BearerFormat != "JWT" {
+		t.Errorf("bearer = %+v", bearer)
+	}
+
+	oauth2 := defs[2]
+	if oauth2.Name != "OAuth2" || oauth2.Type != "oauth2" || len(oauth2.Flows) != 1 {
+		t.Errorf("oauth2 = %+v", oauth2)
+	}
+	flow := oauth2.Flows[0]
+	if flow.Type != "authorizationCode" {
+		t.Errorf("flow.Type = %q", flow.Type)
+	}
+	if flow.Scopes["read"] != "Read access" || flow.Scopes["write"] != "Write access" {
+		t.Errorf("flow.Scopes = %v", flow.Scopes)
 	}
 }
 
-func TestExtract_GlobalContact(t *testing.T) {
-	ast := buildAST(fn("main",
-		"// @title My API",
-		"// @version 1.0",
-		"// @contact.name API Support",
-		"// @contact.url https://www.example.com/support",
-		"// @contact.email support@example.com",
-	))
+func TestExtract_OperationBasic(t *testing.T) {
+	fn := makeFunc("ListPets", 10,
+		"ListPets returns all pets.",
+		"@Summary List all pets",
+		"@Description Get a paginated list of all pets",
+		"@ID listPets",
+		"@Tags pets",
+		"@Accept json",
+		"@Produce json, xml",
+		`@Param limit query integer false int32 "Max items"`,
+		`@Param offset query integer false int32 "Offset"`,
+		`@Success 200 {object} common.PageData{data=[]models.Pet} "Paginated pets"`,
+		`@Header 200 {string} X-Total-Count "Total number of pets"`,
+		`@Failure 500 {object} models.Error "Server error"`,
+		"@Security ApiKeyAuth",
+		"@Router /pets [get]",
+	)
 
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("handlers", fn)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	c := result.Global.Contact
-	if c.Name != "API Support" {
-		t.Errorf("contact.name = %q", c.Name)
+	if len(result.Operations) != 1 {
+		t.Fatalf("Operations len = %d, want 1", len(result.Operations))
 	}
-	if c.URL != "https://www.example.com/support" {
-		t.Errorf("contact.url = %q", c.URL)
-	}
-	if c.Email != "support@example.com" {
-		t.Errorf("contact.email = %q", c.Email)
-	}
-}
-
-func TestExtract_GlobalLicense(t *testing.T) {
-	ast := buildAST(fn("main",
-		"// @title My API",
-		"// @version 1.0",
-		"// @license.name Apache 2.0",
-		"// @license.url https://www.apache.org/licenses/LICENSE-2.0.html",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	l := result.Global.License
-	if l.Name != "Apache 2.0" {
-		t.Errorf("license.name = %q", l.Name)
-	}
-	if l.URL != "https://www.apache.org/licenses/LICENSE-2.0.html" {
-		t.Errorf("license.url = %q", l.URL)
-	}
-}
-
-func TestExtract_GlobalTermsOfService(t *testing.T) {
-	ast := buildAST(fn("main",
-		"// @title My API",
-		"// @version 1.0",
-		"// @termsOfService https://example.com/terms",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if result.Global.TermsOfService != "https://example.com/terms" {
-		t.Errorf("termsOfService = %q", result.Global.TermsOfService)
-	}
-}
-
-func TestExtract_GlobalExternalDocs(t *testing.T) {
-	ast := buildAST(fn("main",
-		"// @title My API",
-		"// @version 1.0",
-		"// @externalDocs.url https://example.com/docs",
-		"// @externalDocs.description Find out more",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if result.Global.ExternalDocs == nil {
-		t.Fatal("expected externalDocs to be set")
-	}
-	if result.Global.ExternalDocs.URL != "https://example.com/docs" {
-		t.Errorf("externalDocs.url = %q", result.Global.ExternalDocs.URL)
-	}
-	if result.Global.ExternalDocs.Description != "Find out more" {
-		t.Errorf("externalDocs.description = %q", result.Global.ExternalDocs.Description)
-	}
-}
-
-func TestExtract_GlobalServers(t *testing.T) {
-	ast := buildAST(fn("main",
-		"// @title My API",
-		"// @version 1.0",
-		`// @server https://api.example.com "Production"`,
-		`// @server https://staging.example.com "Staging"`,
-		"// @server http://localhost:8080",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	servers := result.Global.Servers
-	if len(servers) != 3 {
-		t.Fatalf("expected 3 servers, got %d", len(servers))
-	}
-	if servers[0].URL != "https://api.example.com" || servers[0].Description != "Production" {
-		t.Errorf("server[0] = %+v", servers[0])
-	}
-	if servers[1].URL != "https://staging.example.com" || servers[1].Description != "Staging" {
-		t.Errorf("server[1] = %+v", servers[1])
-	}
-	if servers[2].URL != "http://localhost:8080" || servers[2].Description != "" {
-		t.Errorf("server[2] = %+v", servers[2])
-	}
-}
-
-// ============================================================
-// Extractor Tests — OpenAPI 3 specific: RequestBody
-// ============================================================
-
-func TestExtract_BodyParamBecomesRequestBody(t *testing.T) {
-	ast := buildAST(fn("CreateUser",
-		"// @Summary Create a new user",
-		"// @Accept json",
-		"// @Param body body CreateUserRequest true \"User to create\"",
-		"// @Success 201 {object} UserResponse \"Created\"",
-		"// @Router /users [post]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	op := result.Operations[0]
 
-	// body params should NOT appear in Params
-	if len(op.Params) != 0 {
-		t.Errorf("expected 0 params (body should be in RequestBody), got %d", len(op.Params))
+	if op.FuncName != "ListPets" {
+		t.Errorf("FuncName = %q", op.FuncName)
+	}
+	if op.Summary != "List all pets" {
+		t.Errorf("Summary = %q", op.Summary)
+	}
+	if op.Description != "Get a paginated list of all pets" {
+		t.Errorf("Description = %q", op.Description)
+	}
+	if op.OperationID != "listPets" {
+		t.Errorf("OperationID = %q", op.OperationID)
+	}
+	if len(op.Tags) != 1 || op.Tags[0] != "pets" {
+		t.Errorf("Tags = %v", op.Tags)
+	}
+	if len(op.Accept) != 1 || op.Accept[0] != "application/json" {
+		t.Errorf("Accept = %v", op.Accept)
+	}
+	if len(op.Produce) != 2 {
+		t.Errorf("Produce = %v", op.Produce)
+	}
+	if op.Route.Method != "GET" || op.Route.Path != "/pets" {
+		t.Errorf("Route = %+v", op.Route)
 	}
 
-	if op.RequestBody == nil {
-		t.Fatal("expected RequestBody to be set")
-	}
-	rb := op.RequestBody
-	if rb.TypeName != "CreateUserRequest" {
-		t.Errorf("requestBody.typeName = %q", rb.TypeName)
-	}
-	if !rb.Required {
-		t.Error("expected requestBody.required=true")
-	}
-	if rb.Description != "User to create" {
-		t.Errorf("requestBody.description = %q", rb.Description)
-	}
-	if rb.IsForm {
-		t.Error("expected requestBody.isForm=false for body param")
-	}
-}
-
-func TestExtract_FormDataBecomesRequestBody(t *testing.T) {
-	ast := buildAST(fn("UploadAvatar",
-		"// @Summary Upload avatar",
-		"// @Accept mpfd",
-		"// @Param file formData file true \"Avatar file\"",
-		"// @Param name formData string true \"User name\"",
-		"// @Success 200 {object} UploadResult \"OK\"",
-		"// @Router /users/avatar [post]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	op := result.Operations[0]
-	if len(op.Params) != 0 {
-		t.Errorf("expected 0 params (formData should be in RequestBody), got %d", len(op.Params))
-	}
-	if op.RequestBody == nil {
-		t.Fatal("expected RequestBody to be set")
-	}
-	rb := op.RequestBody
-	if !rb.IsForm {
-		t.Error("expected requestBody.isForm=true")
-	}
-	if len(rb.Fields) != 2 {
-		t.Fatalf("expected 2 form fields, got %d", len(rb.Fields))
-	}
-	if rb.Fields[0].Name != "file" || rb.Fields[0].TypeName != "file" {
-		t.Errorf("field[0] = %+v", rb.Fields[0])
-	}
-	if rb.Fields[1].Name != "name" || rb.Fields[1].TypeName != "string" {
-		t.Errorf("field[1] = %+v", rb.Fields[1])
-	}
-}
-
-func TestExtract_MixedParamsAndBody(t *testing.T) {
-	ast := buildAST(fn("UpdateUser",
-		"// @Summary Update user",
-		"// @Param id path int true \"User ID\"",
-		"// @Param body body UpdateUserRequest true \"User data\"",
-		"// @Param X-Token header string true \"Auth token\"",
-		"// @Success 200 {object} UserResponse \"OK\"",
-		"// @Router /users/{id} [put]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	op := result.Operations[0]
-	// path + header = 2 params, body → RequestBody
+	// Params
 	if len(op.Params) != 2 {
-		t.Fatalf("expected 2 params (path + header), got %d", len(op.Params))
+		t.Fatalf("Params len = %d, want 2", len(op.Params))
 	}
-	if op.Params[0].Name != "id" || op.Params[0].In != "path" {
-		t.Errorf("params[0] = %+v", op.Params[0])
+	if op.Params[0].Name != "limit" || op.Params[0].Format != "int32" {
+		t.Errorf("Params[0] = %+v", op.Params[0])
 	}
-	if op.Params[1].Name != "X-Token" || op.Params[1].In != "header" {
-		t.Errorf("params[1] = %+v", op.Params[1])
+
+	// Responses
+	if len(op.Responses) != 2 {
+		t.Fatalf("Responses len = %d, want 2", len(op.Responses))
 	}
-	if op.RequestBody == nil || op.RequestBody.TypeName != "UpdateUserRequest" {
-		t.Errorf("requestBody = %+v", op.RequestBody)
+	ok200 := op.Responses[0]
+	if ok200.Code != "200" || ok200.WrapType != "object" || ok200.TypeName != "common.PageData{data=[]models.Pet}" {
+		t.Errorf("Responses[0] = %+v", ok200)
+	}
+
+	// Headers
+	if len(op.Headers) != 1 || op.Headers[0].Name != "X-Total-Count" {
+		t.Errorf("Headers = %+v", op.Headers)
+	}
+
+	// Security
+	if len(op.Security) != 1 || op.Security[0].Name != "ApiKeyAuth" {
+		t.Errorf("Security = %+v", op.Security)
 	}
 }
 
-// ============================================================
-// Extractor Tests — Accept / Produce
-// ============================================================
+func TestExtract_OperationDeprecated(t *testing.T) {
+	fn := makeFunc("DeletePet", 20,
+		"@Summary Delete a pet",
+		"@Tags pets",
+		`@Param id path integer true int64 "Pet ID"`,
+		`@Success 204 "No Content"`,
+		`@Failure 404 {object} models.Error "Not found"`,
+		"@Deprecated",
+		"@Security ApiKeyAuth",
+		"@Router /pets/{id} [delete]",
+	)
 
-func TestExtract_AcceptProduce(t *testing.T) {
-	ast := buildAST(fn("CreateUser",
-		"// @Summary Create user",
-		"// @Accept json, xml",
-		"// @Produce json",
-		"// @Router /users [post]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("handlers", fn)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	op := result.Operations[0]
-	if len(op.Accept) != 2 {
-		t.Fatalf("expected 2 accept types, got %d", len(op.Accept))
+	if !op.Deprecated {
+		t.Error("Deprecated should be true")
 	}
-	if op.Accept[0] != "application/json" || op.Accept[1] != "application/xml" {
-		t.Errorf("accept = %v", op.Accept)
+	if op.Route.Method != "DELETE" || op.Route.Path != "/pets/{id}" {
+		t.Errorf("Route = %+v", op.Route)
 	}
-	if len(op.Produce) != 1 || op.Produce[0] != "application/json" {
-		t.Errorf("produce = %v", op.Produce)
+	if op.Params[0].Format != "int64" {
+		t.Errorf("Params[0].Format = %q", op.Params[0].Format)
+	}
+	// 204 no-body response
+	if op.Responses[0].WrapType != "" || op.Responses[0].TypeName != "" {
+		t.Errorf("204 response should have no body: %+v", op.Responses[0])
 	}
 }
 
-// ============================================================
-// Extractor Tests — Security with Scopes
-// ============================================================
+func TestExtract_OperationFormData(t *testing.T) {
+	fn := makeFunc("UploadPhoto", 30,
+		"@Summary Upload pet photo",
+		"@Tags pets",
+		"@Accept mpfd",
+		"@Produce json",
+		`@Param id path integer true "Pet ID"`,
+		`@Param file formData file true "Photo file"`,
+		`@Param caption formData string false "Photo caption"`,
+		`@Success 200 {object} models.UploadResult "OK"`,
+		"@Router /pets/{id}/photos [post]",
+	)
 
-func TestExtract_SecuritySimple(t *testing.T) {
-	ast := buildAST(fn("DeleteUser",
-		"// @Summary Delete user",
-		"// @Security ApiKeyAuth",
-		"// @Router /users/{id} [delete]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("handlers", fn)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	op := result.Operations[0]
-	if len(op.Security) != 1 {
-		t.Fatalf("expected 1 security, got %d", len(op.Security))
+	if op.Accept[0] != "multipart/form-data" {
+		t.Errorf("Accept = %v", op.Accept)
 	}
-	if op.Security[0].Name != "ApiKeyAuth" || len(op.Security[0].Scopes) != 0 {
-		t.Errorf("security = %+v", op.Security[0])
+	if len(op.Params) != 3 {
+		t.Fatalf("Params len = %d, want 3", len(op.Params))
+	}
+	if op.Params[1].In != "formdata" || op.Params[1].TypeName != "file" {
+		t.Errorf("Params[1] = %+v", op.Params[1])
 	}
 }
 
-func TestExtract_SecurityWithScopes(t *testing.T) {
-	ast := buildAST(fn("CreatePet",
-		"// @Summary Create pet",
-		"// @Security OAuth2[write, admin]",
-		"// @Router /pets [post]",
-	))
+func TestExtract_OperationDescriptionFallback(t *testing.T) {
+	// 没有 @Description，普通注释行应成为 Description
+	fn := makeFunc("GetUser", 5,
+		"GetUser returns a user by ID.",
+		"This is the second line.",
+		"@Summary Get user",
+		"@Router /users/{id} [get]",
+	)
 
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("handlers", fn)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	op := result.Operations[0]
-	if len(op.Security) != 1 {
-		t.Fatalf("expected 1 security, got %d", len(op.Security))
-	}
-	sec := op.Security[0]
-	if sec.Name != "OAuth2" {
-		t.Errorf("security.name = %q", sec.Name)
-	}
-	if len(sec.Scopes) != 2 || sec.Scopes[0] != "write" || sec.Scopes[1] != "admin" {
-		t.Errorf("security.scopes = %v", sec.Scopes)
+	if op.Description != "GetUser returns a user by ID.\nThis is the second line." {
+		t.Errorf("Description = %q", op.Description)
 	}
 }
 
-func TestExtract_MultipleSecuritySchemes(t *testing.T) {
-	ast := buildAST(fn("AdminAction",
-		"// @Summary Admin action",
-		"// @Security ApiKeyAuth",
-		"// @Security OAuth2[admin]",
-		"// @Router /admin/action [post]",
-	))
+func TestExtract_OperationDescriptionExplicit(t *testing.T) {
+	// 有 @Description 时，不使用普通注释行
+	fn := makeFunc("GetUser", 5,
+		"This plain line should be ignored.",
+		"@Summary Get user",
+		"@Description Explicit description.",
+		"@Router /users/{id} [get]",
+	)
 
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("handlers", fn)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	op := result.Operations[0]
+	if op.Description != "Explicit description." {
+		t.Errorf("Description = %q", op.Description)
+	}
+}
+
+func TestExtract_OperationSecurityWithScopes(t *testing.T) {
+	fn := makeFunc("CreatePet", 15,
+		"@Summary Create a pet",
+		"@Security OAuth2[write]",
+		"@Security ApiKeyAuth",
+		"@Router /pets [post]",
+	)
+
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("handlers", fn)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	op := result.Operations[0]
 	if len(op.Security) != 2 {
-		t.Fatalf("expected 2 security, got %d", len(op.Security))
+		t.Fatalf("Security len = %d, want 2", len(op.Security))
 	}
-	if op.Security[0].Name != "ApiKeyAuth" {
-		t.Errorf("security[0] = %+v", op.Security[0])
+	if op.Security[0].Name != "OAuth2" || len(op.Security[0].Scopes) != 1 || op.Security[0].Scopes[0] != "write" {
+		t.Errorf("Security[0] = %+v", op.Security[0])
 	}
-	if op.Security[1].Name != "OAuth2" || len(op.Security[1].Scopes) != 1 {
-		t.Errorf("security[1] = %+v", op.Security[1])
-	}
-}
-
-// ============================================================
-// Extractor Tests — Response Headers
-// ============================================================
-
-func TestExtract_ResponseHeaders(t *testing.T) {
-	ast := buildAST(fn("GetUser",
-		"// @Summary Get user",
-		"// @Success 200 {object} UserResponse \"OK\"",
-		`// @Header 200 {string} X-Request-Id "Request tracking ID"`,
-		`// @Header 200 {integer} X-RateLimit-Remaining "Remaining requests"`,
-		"// @Router /users/{id} [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	op := result.Operations[0]
-	resp := op.Responses[0]
-	if len(resp.Headers) != 2 {
-		t.Fatalf("expected 2 headers on 200 response, got %d", len(resp.Headers))
-	}
-	if resp.Headers[0].Name != "X-Request-Id" || resp.Headers[0].TypeName != "string" {
-		t.Errorf("header[0] = %+v", resp.Headers[0])
-	}
-	if resp.Headers[1].Name != "X-RateLimit-Remaining" || resp.Headers[1].TypeName != "integer" {
-		t.Errorf("header[1] = %+v", resp.Headers[1])
+	if op.Security[1].Name != "ApiKeyAuth" || len(op.Security[1].Scopes) != 0 {
+		t.Errorf("Security[1] = %+v", op.Security[1])
 	}
 }
 
-// ============================================================
-// Extractor Tests — Primitive and No-Body Responses
-// ============================================================
-
-func TestExtract_PrimitiveResponse(t *testing.T) {
-	ast := buildAST(fn("GetHealth",
-		"// @Summary Health check",
-		`// @Success 200 {string} string "OK"`,
-		"// @Router /health [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resp := result.Operations[0].Responses[0]
-	if !resp.IsPrimitive {
-		t.Error("expected IsPrimitive=true")
-	}
-	if resp.TypeName != "string" {
-		t.Errorf("typeName = %q", resp.TypeName)
-	}
-}
-
-func TestExtract_NoBodyResponse(t *testing.T) {
-	ast := buildAST(fn("DeleteUser",
-		"// @Summary Delete user",
-		`// @Success 204 "No Content"`,
-		"// @Router /users/{id} [delete]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resp := result.Operations[0].Responses[0]
-	if resp.Code != "204" {
-		t.Errorf("code = %q", resp.Code)
-	}
-	if resp.TypeName != "" {
-		t.Errorf("expected empty typeName for 204, got %q", resp.TypeName)
-	}
-	if resp.Description != "No Content" {
-		t.Errorf("description = %q", resp.Description)
-	}
-}
-
-// ============================================================
-// Extractor Tests — Security Definitions (Global)
-// ============================================================
-
-func TestExtract_GlobalSecurityDef_ApiKey(t *testing.T) {
-	ast := buildAST(fn("main",
-		"// @title My API",
-		"// @version 1.0",
-		"// @securityDefinitions.apikey ApiKeyAuth",
-		"// @securityDefinitions.apikey.in header",
-		"// @securityDefinitions.apikey.name X-API-Key",
-		"// @securityDefinitions.apikey.description API key auth",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(result.Global.SecurityDefs) != 1 {
-		t.Fatalf("expected 1 security def, got %d", len(result.Global.SecurityDefs))
-	}
-	sd := result.Global.SecurityDefs[0]
-	if sd.Name != "ApiKeyAuth" {
-		t.Errorf("name = %q", sd.Name)
-	}
-	if sd.Type != "apiKey" {
-		t.Errorf("type = %q", sd.Type)
-	}
-	if sd.In != "header" {
-		t.Errorf("in = %q", sd.In)
-	}
-	if sd.FieldName != "X-API-Key" {
-		t.Errorf("fieldName = %q", sd.FieldName)
-	}
-	if sd.Description != "API key auth" {
-		t.Errorf("description = %q", sd.Description)
-	}
-}
-
-func TestExtract_GlobalSecurityDef_Basic(t *testing.T) {
-	ast := buildAST(fn("main",
-		"// @title My API",
-		"// @version 1.0",
-		"// @securityDefinitions.basic BasicAuth",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(result.Global.SecurityDefs) != 1 {
-		t.Fatalf("expected 1 security def, got %d", len(result.Global.SecurityDefs))
-	}
-	sd := result.Global.SecurityDefs[0]
-	if sd.Name != "BasicAuth" || sd.Type != "http" || sd.Scheme != "basic" {
-		t.Errorf("got %+v", sd)
-	}
-}
-
-func TestExtract_GlobalSecurityDef_Bearer(t *testing.T) {
-	ast := buildAST(fn("main",
-		"// @title My API",
-		"// @version 1.0",
-		"// @securityDefinitions.bearer BearerAuth",
-		"// @securityDefinitions.bearer.bearerFormat JWT",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(result.Global.SecurityDefs) != 1 {
-		t.Fatalf("expected 1 security def, got %d", len(result.Global.SecurityDefs))
-	}
-	sd := result.Global.SecurityDefs[0]
-	if sd.Name != "BearerAuth" || sd.Type != "http" || sd.Scheme != "bearer" {
-		t.Errorf("got %+v", sd)
-	}
-	if sd.BearerFormat != "JWT" {
-		t.Errorf("bearerFormat = %q", sd.BearerFormat)
-	}
-}
-
-func TestExtract_GlobalSecurityDef_OAuth2(t *testing.T) {
-	ast := buildAST(fn("main",
-		"// @title My API",
-		"// @version 1.0",
-		"// @securityDefinitions.oauth2.authorizationCode OAuth2",
-		"// @securityDefinitions.oauth2.authorizationCode.authorizationUrl https://example.com/oauth/authorize",
-		"// @securityDefinitions.oauth2.authorizationCode.tokenUrl https://example.com/oauth/token",
-		`// @securityDefinitions.oauth2.authorizationCode.scope.read "Read access"`,
-		`// @securityDefinitions.oauth2.authorizationCode.scope.write "Write access"`,
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(result.Global.SecurityDefs) != 1 {
-		t.Fatalf("expected 1 security def, got %d", len(result.Global.SecurityDefs))
-	}
-	sd := result.Global.SecurityDefs[0]
-	if sd.Name != "OAuth2" || sd.Type != "oauth2" {
-		t.Errorf("got %+v", sd)
-	}
-	if sd.OAuthFlowType != "authorizationCode" {
-		t.Errorf("flowType = %q", sd.OAuthFlowType)
-	}
-	if sd.AuthorizationURL != "https://example.com/oauth/authorize" {
-		t.Errorf("authorizationUrl = %q", sd.AuthorizationURL)
-	}
-	if sd.TokenURL != "https://example.com/oauth/token" {
-		t.Errorf("tokenUrl = %q", sd.TokenURL)
-	}
-	if len(sd.Scopes) != 2 {
-		t.Fatalf("expected 2 scopes, got %d", len(sd.Scopes))
-	}
-	if sd.Scopes["read"] != "Read access" {
-		t.Errorf("scope[read] = %q", sd.Scopes["read"])
-	}
-	if sd.Scopes["write"] != "Write access" {
-		t.Errorf("scope[write] = %q", sd.Scopes["write"])
-	}
-}
-
-// ============================================================
-// Extractor Tests — Full Realistic API
-// ============================================================
-
-func TestExtract_FullRealisticAPI(t *testing.T) {
-	ast := buildAST(
-		fn("main",
-			"// @title Pet Store API",
-			"// @version 2.0.0",
-			"// @description A sample pet store server.",
-			"// @termsOfService https://example.com/terms",
-			"// @contact.name API Support",
-			"// @contact.email support@example.com",
-			"// @license.name Apache 2.0",
-			"// @license.url https://www.apache.org/licenses/LICENSE-2.0.html",
-			`// @server https://api.petstore.com "Production"`,
-			`// @server http://localhost:8080 "Development"`,
-			`// @tag pets "Everything about your Pets"`,
-			"// @securityDefinitions.apikey ApiKeyAuth",
-			"// @securityDefinitions.apikey.in header",
-			"// @securityDefinitions.apikey.name X-API-Key",
-		),
-		fn("ListPets",
-			"// @Summary List all pets",
-			"// @Description Get a list of all pets in the store",
-			"// @ID listPets",
-			"// @Tags pets",
-			"// @Accept json",
-			"// @Produce json, xml",
-			"// @Param limit query int false \"Max items\"",
-			"// @Param offset query int false \"Offset\"",
-			"// @Success 200 {array} Pet \"Pets list\"",
-			`// @Header 200 {string} X-Total-Count "Total number of pets"`,
-			"// @Failure 500 {object} Error \"Server error\"",
-			"// @Security ApiKeyAuth",
-			"// @Router /pets [get]",
-		),
-		fn("CreatePet",
-			"// @Summary Create a pet",
-			"// @Tags pets",
-			"// @Accept json",
-			"// @Produce json",
-			"// @Param body body CreatePetRequest true \"Pet to create\"",
-			"// @Success 201 {object} Pet \"Created\"",
-			"// @Failure 400 {object} Error \"Validation error\"",
-			"// @Security ApiKeyAuth",
-			"// @Router /pets [post]",
-		),
-		fn("DeletePet",
-			"// @Summary Delete a pet",
-			"// @Tags pets",
-			"// @Param id path int true \"Pet ID\"",
-			`// @Success 204 "No Content"`,
-			"// @Failure 404 {object} Error \"Not found\"",
-			"// @Security ApiKeyAuth",
-			"// @Deprecated",
-			"// @Router /pets/{id} [delete]",
-		),
+func TestExtract_NoRouterIgnored(t *testing.T) {
+	// 没有 @Router 的函数不应产生 OperationAnnotation
+	fn := makeFunc("helperFunc", 5,
+		"@Summary Should be ignored",
+		"@Tags internal",
 	)
 
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("handlers", fn)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Global
-	g := result.Global
-	if g.Title != "Pet Store API" || g.Version != "2.0.0" {
-		t.Errorf("info: title=%q, version=%q", g.Title, g.Version)
-	}
-	if g.Contact.Name != "API Support" || g.Contact.Email != "support@example.com" {
-		t.Errorf("contact = %+v", g.Contact)
-	}
-	if g.License.Name != "Apache 2.0" {
-		t.Errorf("license = %+v", g.License)
-	}
-	if len(g.Servers) != 2 {
-		t.Errorf("servers count = %d", len(g.Servers))
-	}
-	if len(g.Tags) != 1 || g.Tags[0].Name != "pets" {
-		t.Errorf("tags = %+v", g.Tags)
-	}
-	if len(g.SecurityDefs) != 1 || g.SecurityDefs[0].Type != "apiKey" {
-		t.Errorf("securityDefs = %+v", g.SecurityDefs)
-	}
-	if g.SecurityDefs[0].In != "header" || g.SecurityDefs[0].FieldName != "X-API-Key" {
-		t.Errorf("apiKey details = %+v", g.SecurityDefs[0])
-	}
-
-	// Operations
-	if len(result.Operations) != 3 {
-		t.Fatalf("expected 3 operations, got %d", len(result.Operations))
-	}
-
-	// ListPets
-	list := result.Operations[0]
-	if list.OperationID != "listPets" {
-		t.Errorf("listPets.operationId = %q", list.OperationID)
-	}
-	if len(list.Params) != 2 {
-		t.Errorf("listPets.params count = %d", len(list.Params))
-	}
-	if len(list.Produce) != 2 {
-		t.Errorf("listPets.produce count = %d", len(list.Produce))
-	}
-	if len(list.Responses) > 0 && len(list.Responses[0].Headers) != 1 {
-		t.Errorf("listPets 200 headers count = %d", len(list.Responses[0].Headers))
-	}
-
-	// CreatePet — body → RequestBody
-	create := result.Operations[1]
-	if create.RequestBody == nil || create.RequestBody.TypeName != "CreatePetRequest" {
-		t.Errorf("createPet.requestBody = %+v", create.RequestBody)
-	}
-	if len(create.Params) != 0 {
-		t.Errorf("createPet should have 0 path/query params, got %d", len(create.Params))
-	}
-
-	// DeletePet — deprecated, 204 no-body
-	del := result.Operations[2]
-	if !del.Deprecated {
-		t.Error("deletePet should be deprecated")
-	}
-	if del.Responses[0].Code != "204" || del.Responses[0].TypeName != "" {
-		t.Errorf("deletePet 204 response = %+v", del.Responses[0])
+	if len(result.Operations) != 0 {
+		t.Errorf("expected 0 operations, got %d", len(result.Operations))
 	}
 }
 
-// ============================================================
-// parseTypeExpr Tests
-// ============================================================
+func TestExtract_NoComments(t *testing.T) {
+	fn := parser.RawFunc{Name: "silent", FilePath: "/f.go", Line: 1}
 
-func TestParseTypeExpr_Simple(t *testing.T) {
-	te := ParseTypeExpr("User")
-	if te.Name != "User" || len(te.Overrides) != 0 {
-		t.Errorf("got %+v", te)
-	}
-}
-
-func TestParseTypeExpr_Array(t *testing.T) {
-	te := ParseTypeExpr("[]User")
-	if te.Name != "[]User" || len(te.Overrides) != 0 {
-		t.Errorf("got %+v", te)
-	}
-}
-
-func TestParseTypeExpr_SingleOverride(t *testing.T) {
-	te := ParseTypeExpr("PageData{data=[]User}")
-	if te.Name != "PageData" {
-		t.Errorf("name = %q", te.Name)
-	}
-	if len(te.Overrides) != 1 {
-		t.Fatalf("expected 1 override, got %d", len(te.Overrides))
-	}
-	if te.Overrides[0].Field != "data" || te.Overrides[0].TypeExpr != "[]User" {
-		t.Errorf("override = %+v", te.Overrides[0])
-	}
-}
-
-func TestParseTypeExpr_MultiOverride(t *testing.T) {
-	te := ParseTypeExpr("PageData{data=[]User,code=int}")
-	if te.Name != "PageData" {
-		t.Errorf("name = %q", te.Name)
-	}
-	if len(te.Overrides) != 2 {
-		t.Fatalf("expected 2 overrides, got %d", len(te.Overrides))
-	}
-	if te.Overrides[0].Field != "data" || te.Overrides[0].TypeExpr != "[]User" {
-		t.Errorf("override[0] = %+v", te.Overrides[0])
-	}
-	if te.Overrides[1].Field != "code" || te.Overrides[1].TypeExpr != "int" {
-		t.Errorf("override[1] = %+v", te.Overrides[1])
-	}
-}
-
-func TestParseTypeExpr_NestedComposite(t *testing.T) {
-	te := ParseTypeExpr("Response{data=PageData{items=[]User},meta=Meta}")
-	if te.Name != "Response" {
-		t.Errorf("name = %q", te.Name)
-	}
-	if len(te.Overrides) != 2 {
-		t.Fatalf("expected 2 overrides, got %d", len(te.Overrides))
-	}
-	if te.Overrides[0].Field != "data" || te.Overrides[0].TypeExpr != "PageData{items=[]User}" {
-		t.Errorf("override[0] = %+v", te.Overrides[0])
-	}
-	if te.Overrides[1].Field != "meta" || te.Overrides[1].TypeExpr != "Meta" {
-		t.Errorf("override[1] = %+v", te.Overrides[1])
-	}
-}
-
-func TestParseTypeExpr_MapOverride(t *testing.T) {
-	te := ParseTypeExpr("PageData{data=map[string]User}")
-	if te.Name != "PageData" {
-		t.Errorf("name = %q", te.Name)
-	}
-	if len(te.Overrides) != 1 {
-		t.Fatalf("expected 1 override, got %d", len(te.Overrides))
-	}
-	if te.Overrides[0].TypeExpr != "map[string]User" {
-		t.Errorf("override typeExpr = %q", te.Overrides[0].TypeExpr)
-	}
-}
-
-// ============================================================
-// Extractor Tests — Composite Response Types
-// ============================================================
-
-func TestExtract_CompositeResponse_PageData(t *testing.T) {
-	ast := buildAST(fn("ListUsers",
-		"// @Summary List users",
-		`// @Success 200 {object} PageData{data=[]User} "Paginated users"`,
-		"// @Router /users [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("pkg", fn)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	resp := result.Operations[0].Responses[0]
-	if resp.TypeName != "PageData{data=[]User}" {
-		t.Errorf("typeName = %q", resp.TypeName)
-	}
-	if resp.Type.Name != "PageData" {
-		t.Errorf("type.name = %q", resp.Type.Name)
-	}
-	if len(resp.Type.Overrides) != 1 {
-		t.Fatalf("expected 1 override, got %d", len(resp.Type.Overrides))
-	}
-	ov := resp.Type.Overrides[0]
-	if ov.Field != "data" || ov.TypeExpr != "[]User" {
-		t.Errorf("override = %+v", ov)
+	if len(result.Operations) != 0 {
+		t.Errorf("expected 0 operations")
 	}
 }
 
-func TestExtract_CompositeResponse_MultiField(t *testing.T) {
-	ast := buildAST(fn("ListOrders",
-		"// @Summary List orders",
-		`// @Success 200 {object} PageData{data=[]Order,total=int64} "Paginated orders"`,
-		"// @Router /orders [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resp := result.Operations[0].Responses[0]
-	if resp.Type.Name != "PageData" {
-		t.Errorf("type.name = %q", resp.Type.Name)
-	}
-	if len(resp.Type.Overrides) != 2 {
-		t.Fatalf("expected 2 overrides, got %d", len(resp.Type.Overrides))
-	}
-	if resp.Type.Overrides[0].Field != "data" || resp.Type.Overrides[0].TypeExpr != "[]Order" {
-		t.Errorf("override[0] = %+v", resp.Type.Overrides[0])
-	}
-	if resp.Type.Overrides[1].Field != "total" || resp.Type.Overrides[1].TypeExpr != "int64" {
-		t.Errorf("override[1] = %+v", resp.Type.Overrides[1])
-	}
-}
-
-func TestExtract_CompositeResponse_ArrayWrapper(t *testing.T) {
-	ast := buildAST(fn("ListUsers",
-		"// @Summary List users",
-		`// @Success 200 {array} PageData{data=User} "Users"`,
-		"// @Router /users [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resp := result.Operations[0].Responses[0]
-	if !resp.IsArray {
-		t.Error("expected IsArray=true")
-	}
-	if resp.Type.Name != "PageData" {
-		t.Errorf("type.name = %q", resp.Type.Name)
-	}
-}
-
-func TestExtract_CompositeResponse_Simple(t *testing.T) {
-	ast := buildAST(fn("GetUser",
-		"// @Summary Get user",
-		`// @Success 200 {object} User "OK"`,
-		"// @Router /users/{id} [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resp := result.Operations[0].Responses[0]
-	if resp.Type.Name != "User" {
-		t.Errorf("type.name = %q", resp.Type.Name)
-	}
-	if len(resp.Type.Overrides) != 0 {
-		t.Errorf("expected 0 overrides for simple type, got %d", len(resp.Type.Overrides))
-	}
-}
-
-func TestExtract_CompositeRequestBody(t *testing.T) {
-	ast := buildAST(fn("CreateBatch",
-		"// @Summary Create batch",
-		`// @Param body body BatchRequest{items=[]CreateUserRequest} true "Batch"`,
-		"// @Success 200 {object} BatchResponse \"OK\"",
-		"// @Router /batch [post]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	op := result.Operations[0]
-	if op.RequestBody == nil {
-		t.Fatal("expected RequestBody to be set")
-	}
-	rb := op.RequestBody
-	if rb.Type.Name != "BatchRequest" {
-		t.Errorf("type.name = %q", rb.Type.Name)
-	}
-	if len(rb.Type.Overrides) != 1 {
-		t.Fatalf("expected 1 override, got %d", len(rb.Type.Overrides))
-	}
-	if rb.Type.Overrides[0].Field != "items" || rb.Type.Overrides[0].TypeExpr != "[]CreateUserRequest" {
-		t.Errorf("override = %+v", rb.Type.Overrides[0])
-	}
-}
-
-func TestExtractor_MissingRouter_Warning(t *testing.T) {
-	e := NewGoExtractor()
-
-	ast := buildAST(
-		// Has @Summary and @Tags but NO @Router → should warn.
-		fn("HandlerNoRouter",
-			"// @Summary Missing router",
-			"// @Tags users",
-		),
-		// Has @Router → normal operation, no warning.
-		fn("HandlerWithRouter",
-			"// @Summary With router",
-			"// @Router /ok [get]",
-			"// @Success 200",
-		),
-		// No swagger annotations at all → no warning.
-		fn("PlainFunction"),
+func TestExtract_MultipleFilesAndFunctions(t *testing.T) {
+	// 全局注解在第一个文件，操作注解分布在两个文件
+	mainFn := makeFunc("main", 1,
+		"@title My API",
+		"@version 1.0.0",
+	)
+	op1 := makeFunc("CreateUser", 10,
+		"@Summary Create user",
+		"@Router /users [post]",
+	)
+	op2 := makeFunc("ListOrders", 20,
+		"@Summary List orders",
+		"@Router /orders [get]",
 	)
 
-	result, err := e.Extract(ast)
+	files := []*parser.RawFile{
+		makeFile("main", mainFn),
+		makeFile("handlers", op1),
+		makeFile("handlers", op2),
+	}
+
+	result, err := (&GoExtractor{}).Extract(files)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// One warning for HandlerNoRouter.
-	warns := 0
-	for _, d := range result.Diagnostics {
-		if d.Level == DiagWarn {
-			warns++
-			if d.Message == "" {
-				t.Error("warning message should not be empty")
-			}
-		}
+	if result.Global.Title != "My API" || result.Global.Version != "1.0.0" {
+		t.Errorf("Global = %+v", result.Global)
 	}
-	if warns != 1 {
-		t.Errorf("expected 1 warning, got %d (diagnostics: %+v)", warns, result.Diagnostics)
+	if len(result.Operations) != 2 {
+		t.Fatalf("Operations len = %d, want 2", len(result.Operations))
+	}
+	if result.Operations[0].Route.Path != "/users" || result.Operations[1].Route.Path != "/orders" {
+		t.Errorf("routes = %v %v", result.Operations[0].Route, result.Operations[1].Route)
+	}
+}
+
+func TestExtract_TagsCaseInsensitive(t *testing.T) {
+	// 标签名不区分大小写
+	fn := makeFunc("Handler", 5,
+		"@SUMMARY Upper case",
+		"@Tags Users",
+		"@ROUTER /x [GET]",
+	)
+
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("h", fn)})
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	// HandlerWithRouter should be a real operation.
 	if len(result.Operations) != 1 {
-		t.Errorf("expected 1 operation, got %d", len(result.Operations))
+		t.Fatalf("expected 1 operation")
+	}
+	op := result.Operations[0]
+	if op.Summary != "Upper case" {
+		t.Errorf("Summary = %q", op.Summary)
+	}
+	if op.Route.Method != "GET" {
+		t.Errorf("Method = %q", op.Route.Method)
 	}
 }
 
-func TestExtractor_EmptyProject(t *testing.T) {
-	e := NewGoExtractor()
+func TestExtract_MultipleTagsOnOperation(t *testing.T) {
+	fn := makeFunc("Handler", 5,
+		"@Tags users, admin, internal",
+		"@Router /x [get]",
+	)
 
-	// No functions at all.
-	result, err := e.Extract(&parser.RawAST{})
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{makeFile("h", fn)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	op := result.Operations[0]
+	if len(op.Tags) != 3 || op.Tags[0] != "users" || op.Tags[1] != "admin" || op.Tags[2] != "internal" {
+		t.Errorf("Tags = %v", op.Tags)
+	}
+}
+
+func TestExtract_EmptyFiles(t *testing.T) {
+	result, err := (&GoExtractor{}).Extract([]*parser.RawFile{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Operations) != 0 {
-		t.Errorf("expected 0 operations, got %d", len(result.Operations))
-	}
-	if len(result.Diagnostics) != 0 {
-		t.Errorf("expected 0 diagnostics, got %+v", result.Diagnostics)
-	}
-}
-
-// ============================================================
-// xx.xx (package-qualified) type reference tests
-// ============================================================
-
-// TestParseTypeExpr_Dotted verifies that ParseTypeExpr preserves the full
-// dotted name for package-qualified references.
-func TestParseTypeExpr_Dotted(t *testing.T) {
-	tests := []struct {
-		input     string
-		wantName  string
-		wantOverN int // expected number of overrides
-	}{
-		// Simple qualified name — no braces.
-		{"models.User", "models.User", 0},
-		// stdlib primitive — no braces.
-		{"time.Time", "time.Time", 0},
-		// Third-party UUID.
-		{"uuid.UUID", "uuid.UUID", 0},
-		// Array of qualified type.
-		{"[]models.User", "[]models.User", 0},
-		// Map with qualified value type.
-		{"map[string]models.User", "map[string]models.User", 0},
-		// Composite: base type is qualified.
-		{"models.Response{data=models.User}", "models.Response", 1},
-		// Composite: override value is qualified.
-		{"BaseResponse{data=models.PagedList}", "BaseResponse", 1},
-		// Nested composite with qualified names at every level.
-		{"models.BaseResponse{data=pkg.PagedList{list=[]models.Pet}}", "models.BaseResponse", 1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			te := ParseTypeExpr(tt.input)
-			if te.Name != tt.wantName {
-				t.Errorf("Name = %q, want %q", te.Name, tt.wantName)
-			}
-			if len(te.Overrides) != tt.wantOverN {
-				t.Errorf("len(Overrides) = %d, want %d", len(te.Overrides), tt.wantOverN)
-			}
-		})
-	}
-}
-
-// TestParseTypeExpr_Dotted_NestedOverride checks that the nested composite
-// override value itself is also preserved verbatim for recursive parsing.
-func TestParseTypeExpr_Dotted_NestedOverride(t *testing.T) {
-	te := ParseTypeExpr("models.BaseResponse{data=pkg.PagedList{list=[]models.Pet}}")
-	if te.Name != "models.BaseResponse" {
-		t.Errorf("Name = %q, want models.BaseResponse", te.Name)
-	}
-	if len(te.Overrides) != 1 {
-		t.Fatalf("len(Overrides) = %d, want 1", len(te.Overrides))
-	}
-	ov := te.Overrides[0]
-	if ov.Field != "data" {
-		t.Errorf("Overrides[0].Field = %q, want data", ov.Field)
-	}
-	// The override value should be kept verbatim — the builder calls
-	// ParseTypeExpr on it recursively.
-	if ov.TypeExpr != "pkg.PagedList{list=[]models.Pet}" {
-		t.Errorf("Overrides[0].TypeExpr = %q, want pkg.PagedList{list=[]models.Pet}", ov.TypeExpr)
-	}
-
-	// One more level of recursion.
-	inner := ParseTypeExpr(ov.TypeExpr)
-	if inner.Name != "pkg.PagedList" {
-		t.Errorf("inner.Name = %q, want pkg.PagedList", inner.Name)
-	}
-	if inner.Overrides[0].TypeExpr != "[]models.Pet" {
-		t.Errorf("inner override TypeExpr = %q, want []models.Pet", inner.Overrides[0].TypeExpr)
-	}
-}
-
-// TestParseParam_DottedType verifies @Param with package-qualified type names.
-func TestParseParam_DottedType(t *testing.T) {
-	tests := []struct {
-		raw          string
-		wantName     string
-		wantIn       string
-		wantTypeName string
-		wantRequired bool
-		wantDesc     string
-	}{
-		{
-			`id path uuid.UUID true "user identifier"`,
-			"id", "path", "uuid.UUID", true, "user identifier",
-		},
-		{
-			`body body models.CreateUserRequest true "user data"`,
-			"body", "body", "models.CreateUserRequest", true, "user data",
-		},
-		{
-			`filter query models.SearchFilter false "optional filter"`,
-			"filter", "query", "models.SearchFilter", false, "optional filter",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.raw, func(t *testing.T) {
-			p := parseParam(tt.raw)
-			if p.Name != tt.wantName {
-				t.Errorf("Name = %q, want %q", p.Name, tt.wantName)
-			}
-			if p.In != tt.wantIn {
-				t.Errorf("In = %q, want %q", p.In, tt.wantIn)
-			}
-			if p.TypeName != tt.wantTypeName {
-				t.Errorf("TypeName = %q, want %q", p.TypeName, tt.wantTypeName)
-			}
-			if p.Required != tt.wantRequired {
-				t.Errorf("Required = %v, want %v", p.Required, tt.wantRequired)
-			}
-			if p.Description != tt.wantDesc {
-				t.Errorf("Description = %q, want %q", p.Description, tt.wantDesc)
-			}
-		})
-	}
-}
-
-// TestParseResponse_DottedType verifies @Success/@Failure with qualified types.
-func TestParseResponse_DottedType(t *testing.T) {
-	tests := []struct {
-		raw           string
-		wantCode      string
-		wantTypeName  string
-		wantIsArray   bool
-		wantIsPrimary bool
-		wantDesc      string
-	}{
-		{
-			`200 {object} models.UserResponse "success"`,
-			"200", "models.UserResponse", false, false, "success",
-		},
-		{
-			`200 {array} models.User "list of users"`,
-			"200", "models.User", true, false, "list of users",
-		},
-		{
-			`404 {object} pkg.ErrorResponse "not found"`,
-			"404", "pkg.ErrorResponse", false, false, "not found",
-		},
-		// Composite with qualified base type.
-		{
-			`200 {object} models.BaseResponse{data=models.User} "ok"`,
-			"200", "models.BaseResponse{data=models.User}", false, false, "ok",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.raw, func(t *testing.T) {
-			r := parseResponse(tt.raw)
-			if r.Code != tt.wantCode {
-				t.Errorf("Code = %q, want %q", r.Code, tt.wantCode)
-			}
-			if r.TypeName != tt.wantTypeName {
-				t.Errorf("TypeName = %q, want %q", r.TypeName, tt.wantTypeName)
-			}
-			if r.IsArray != tt.wantIsArray {
-				t.Errorf("IsArray = %v, want %v", r.IsArray, tt.wantIsArray)
-			}
-			if r.Description != tt.wantDesc {
-				t.Errorf("Description = %q, want %q", r.Description, tt.wantDesc)
-			}
-		})
-	}
-}
-
-// TestParseTypeExpr_MultiDotted verifies that ParseTypeExpr preserves names
-// with two or more dots (e.g. sub-package references like sql.ddlx.Response).
-func TestParseTypeExpr_MultiDotted(t *testing.T) {
-	tests := []struct {
-		input     string
-		wantName  string
-		wantOverN int
-	}{
-		// Two-dot simple name.
-		{"sql.ddlx.Response", "sql.ddlx.Response", 0},
-		// Two-dot array.
-		{"[]sql.ddlx.Response", "[]sql.ddlx.Response", 0},
-		// Two-dot as composite base.
-		{"sql.ddlx.Page{data=[]bo.Order}", "sql.ddlx.Page", 1},
-		// Two-dot as override value.
-		{"bo.Page{data=sql.ddlx.Item}", "bo.Page", 1},
-		// Both base and override are two-dot.
-		{"sql.ddlx.Page{data=[]sql.ddlx.Row,meta=bo.Meta}", "sql.ddlx.Page", 2},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			te := ParseTypeExpr(tt.input)
-			if te.Name != tt.wantName {
-				t.Errorf("Name = %q, want %q", te.Name, tt.wantName)
-			}
-			if len(te.Overrides) != tt.wantOverN {
-				t.Errorf("len(Overrides) = %d, want %d", len(te.Overrides), tt.wantOverN)
-			}
-		})
-	}
-}
-
-// TestParseTypeExpr_MultiDotted_Override checks override field values for
-// multi-dot type expressions, including recursive parsing.
-func TestParseTypeExpr_MultiDotted_Override(t *testing.T) {
-	te := ParseTypeExpr("sql.ddlx.Page{data=[]bo.Order,meta=sql.ddlx.Meta}")
-	if te.Name != "sql.ddlx.Page" {
-		t.Errorf("Name = %q, want sql.ddlx.Page", te.Name)
-	}
-	if len(te.Overrides) != 2 {
-		t.Fatalf("len(Overrides) = %d, want 2", len(te.Overrides))
-	}
-	if te.Overrides[0].Field != "data" || te.Overrides[0].TypeExpr != "[]bo.Order" {
-		t.Errorf("Overrides[0] = %+v", te.Overrides[0])
-	}
-	if te.Overrides[1].Field != "meta" || te.Overrides[1].TypeExpr != "sql.ddlx.Meta" {
-		t.Errorf("Overrides[1] = %+v", te.Overrides[1])
-	}
-
-	// Recursive parse of the meta override.
-	inner := ParseTypeExpr(te.Overrides[1].TypeExpr)
-	if inner.Name != "sql.ddlx.Meta" {
-		t.Errorf("inner.Name = %q, want sql.ddlx.Meta", inner.Name)
-	}
-	if len(inner.Overrides) != 0 {
-		t.Errorf("inner should have no overrides, got %d", len(inner.Overrides))
-	}
-}
-
-// TestParseParam_MultiDotType verifies @Param with multi-dot type names.
-func TestParseParam_MultiDotType(t *testing.T) {
-	tests := []struct {
-		raw          string
-		wantName     string
-		wantIn       string
-		wantTypeName string
-		wantRequired bool
-		wantDesc     string
-	}{
-		{
-			`id path bo.ID true "business object ID"`,
-			"id", "path", "bo.ID", true, "business object ID",
-		},
-		{
-			`body body bo.CreateOrderReq true "order data"`,
-			"body", "body", "bo.CreateOrderReq", true, "order data",
-		},
-		{
-			`filter query sql.ddlx.Filter false "query filter"`,
-			"filter", "query", "sql.ddlx.Filter", false, "query filter",
-		},
-		{
-			`x-token header sql.ddlx.AuthToken true "auth token"`,
-			"x-token", "header", "sql.ddlx.AuthToken", true, "auth token",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.wantTypeName, func(t *testing.T) {
-			p := parseParam(tt.raw)
-			if p.Name != tt.wantName {
-				t.Errorf("Name = %q, want %q", p.Name, tt.wantName)
-			}
-			if p.In != tt.wantIn {
-				t.Errorf("In = %q, want %q", p.In, tt.wantIn)
-			}
-			if p.TypeName != tt.wantTypeName {
-				t.Errorf("TypeName = %q, want %q", p.TypeName, tt.wantTypeName)
-			}
-			if p.Required != tt.wantRequired {
-				t.Errorf("Required = %v, want %v", p.Required, tt.wantRequired)
-			}
-			if p.Description != tt.wantDesc {
-				t.Errorf("Description = %q, want %q", p.Description, tt.wantDesc)
-			}
-		})
-	}
-}
-
-// TestParseResponse_MultiDotType verifies @Success/@Failure with multi-dot type names.
-func TestParseResponse_MultiDotType(t *testing.T) {
-	tests := []struct {
-		raw          string
-		wantCode     string
-		wantTypeName string
-		wantIsArray  bool
-		wantDesc     string
-	}{
-		{
-			`200 {object} bo.OrderResp "ok"`,
-			"200", "bo.OrderResp", false, "ok",
-		},
-		{
-			`200 {array} bo.OrderResp "list"`,
-			"200", "bo.OrderResp", true, "list",
-		},
-		{
-			`200 {object} sql.ddlx.Row "single row"`,
-			"200", "sql.ddlx.Row", false, "single row",
-		},
-		{
-			`400 {object} sql.ddlx.ErrResp "bad request"`,
-			"400", "sql.ddlx.ErrResp", false, "bad request",
-		},
-		// Composite with multi-dot base and multi-dot override.
-		{
-			`200 {object} sql.ddlx.Page{data=[]bo.Order} "paged orders"`,
-			"200", "sql.ddlx.Page{data=[]bo.Order}", false, "paged orders",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.wantTypeName, func(t *testing.T) {
-			r := parseResponse(tt.raw)
-			if r.Code != tt.wantCode {
-				t.Errorf("Code = %q, want %q", r.Code, tt.wantCode)
-			}
-			if r.TypeName != tt.wantTypeName {
-				t.Errorf("TypeName = %q, want %q", r.TypeName, tt.wantTypeName)
-			}
-			if r.IsArray != tt.wantIsArray {
-				t.Errorf("IsArray = %v, want %v", r.IsArray, tt.wantIsArray)
-			}
-			if r.Description != tt.wantDesc {
-				t.Errorf("Description = %q, want %q", r.Description, tt.wantDesc)
-			}
-		})
-	}
-}
-
-// TestExtract_MultiDotTypeOperation is an end-to-end test using bo.xx and
-// sql.ddlx.cc style type names in a full operation annotation.
-func TestExtract_MultiDotTypeOperation(t *testing.T) {
-	ast := buildAST(fn("CreateOrder",
-		"// @Summary Create an order",
-		"// @Tags orders",
-		"// @ID createOrder",
-		"// @Accept json",
-		"// @Produce json",
-		`// @Param body body bo.CreateOrderReq true "order payload"`,
-		`// @Param x-shop-id header bo.ShopID true "shop identifier"`,
-		`// @Success 200 {object} sql.ddlx.Page{data=[]bo.Order} "paginated result"`,
-		`// @Failure 400 {object} sql.ddlx.ErrResp "validation error"`,
-		`// @Failure 500 {object} sql.ddlx.ErrResp "server error"`,
-		"// @Router /orders [post]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Operations) != 1 {
-		t.Fatalf("expected 1 operation, got %d", len(result.Operations))
-	}
-	op := result.Operations[0]
-
-	// Header param should carry multi-dot type.
-	if len(op.Params) != 1 {
-		t.Fatalf("expected 1 param (header), got %d", len(op.Params))
-	}
-	if op.Params[0].TypeName != "bo.ShopID" {
-		t.Errorf("param[0].TypeName = %q, want bo.ShopID", op.Params[0].TypeName)
-	}
-
-	// Body → RequestBody with multi-dot type.
-	if op.RequestBody == nil {
-		t.Fatal("expected RequestBody")
-	}
-	if op.RequestBody.TypeName != "bo.CreateOrderReq" {
-		t.Errorf("requestBody.TypeName = %q, want bo.CreateOrderReq", op.RequestBody.TypeName)
-	}
-	if op.RequestBody.Type.Name != "bo.CreateOrderReq" {
-		t.Errorf("requestBody.Type.Name = %q, want bo.CreateOrderReq", op.RequestBody.Type.Name)
-	}
-
-	// 200 response — composite sql.ddlx.Page with bo.Order override.
-	var resp200 *ResponseAnnotation
-	for i := range op.Responses {
-		if op.Responses[i].Code == "200" {
-			resp200 = &op.Responses[i]
-			break
-		}
-	}
-	if resp200 == nil {
-		t.Fatal("missing 200 response")
-	}
-	if resp200.Type.Name != "sql.ddlx.Page" {
-		t.Errorf("200 type.Name = %q, want sql.ddlx.Page", resp200.Type.Name)
-	}
-	if len(resp200.Type.Overrides) != 1 {
-		t.Fatalf("200 overrides len = %d, want 1", len(resp200.Type.Overrides))
-	}
-	ov := resp200.Type.Overrides[0]
-	if ov.Field != "data" || ov.TypeExpr != "[]bo.Order" {
-		t.Errorf("200 override = %+v, want {data []bo.Order}", ov)
-	}
-
-	// 400 / 500 responses — simple multi-dot type.
-	for _, code := range []string{"400", "500"} {
-		var resp *ResponseAnnotation
-		for i := range op.Responses {
-			if op.Responses[i].Code == code {
-				resp = &op.Responses[i]
-				break
-			}
-		}
-		if resp == nil {
-			t.Fatalf("missing %s response", code)
-		}
-		if resp.Type.Name != "sql.ddlx.ErrResp" {
-			t.Errorf("%s type.Name = %q, want sql.ddlx.ErrResp", code, resp.Type.Name)
-		}
-	}
-}
-
-// TestExtract_DottedTypeOperation verifies that a full handler annotation that
-// uses package-qualified type names is correctly extracted end-to-end.
-func TestExtract_DottedTypeOperation(t *testing.T) {
-	ast := buildAST(fn("GetUser",
-		"// @Summary Get a user",
-		"// @Tags users",
-		"// @ID getUser",
-		`// @Param id path uuid.UUID true "user ID"`,
-		`// @Param X-Trace header models.TraceID false "trace header"`,
-		`// @Success 200 {object} models.BaseResponse{data=models.User} "ok"`,
-		`// @Failure 404 {object} pkg.ErrorResponse "not found"`,
-		"// @Router /users/{id} [get]",
-	))
-
-	e := NewGoExtractor()
-	result, err := e.Extract(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Operations) != 1 {
-		t.Fatalf("expected 1 operation, got %d", len(result.Operations))
-	}
-	op := result.Operations[0]
-
-	// Parameters
-	if len(op.Params) != 2 {
-		t.Fatalf("expected 2 params, got %d", len(op.Params))
-	}
-	idParam := op.Params[0]
-	if idParam.TypeName != "uuid.UUID" {
-		t.Errorf("param[0].TypeName = %q, want uuid.UUID", idParam.TypeName)
-	}
-	traceParam := op.Params[1]
-	if traceParam.TypeName != "models.TraceID" {
-		t.Errorf("param[1].TypeName = %q, want models.TraceID", traceParam.TypeName)
-	}
-
-	// 200 response — composite with qualified names
-	var resp200 *ResponseAnnotation
-	for i := range op.Responses {
-		if op.Responses[i].Code == "200" {
-			resp200 = &op.Responses[i]
-			break
-		}
-	}
-	if resp200 == nil {
-		t.Fatal("missing 200 response")
-	}
-	if resp200.Type.Name != "models.BaseResponse" {
-		t.Errorf("200 resp type.Name = %q, want models.BaseResponse", resp200.Type.Name)
-	}
-	if len(resp200.Type.Overrides) != 1 || resp200.Type.Overrides[0].TypeExpr != "models.User" {
-		t.Errorf("200 resp overrides = %+v", resp200.Type.Overrides)
-	}
-
-	// 404 response
-	var resp404 *ResponseAnnotation
-	for i := range op.Responses {
-		if op.Responses[i].Code == "404" {
-			resp404 = &op.Responses[i]
-			break
-		}
-	}
-	if resp404 == nil {
-		t.Fatal("missing 404 response")
-	}
-	if resp404.Type.Name != "pkg.ErrorResponse" {
-		t.Errorf("404 resp type.Name = %q, want pkg.ErrorResponse", resp404.Type.Name)
+		t.Error("expected 0 operations for empty input")
 	}
 }

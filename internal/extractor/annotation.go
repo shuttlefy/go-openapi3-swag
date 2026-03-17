@@ -1,43 +1,28 @@
 package extractor
 
-// DiagLevel is the severity of a diagnostic message.
-type DiagLevel string
-
-const (
-	DiagWarn  DiagLevel = "warn"
-	DiagError DiagLevel = "error"
-)
-
-// Diagnostic is a warning or error produced during annotation extraction or building.
-type Diagnostic struct {
-	Level    DiagLevel
-	FilePath string
-	Line     int
-	Message  string
-}
-
+// ExtractResult 是 GoExtractor.Extract 的输出：全局注解 + 所有操作注解。
 type ExtractResult struct {
-	Global      GlobalAnnotation
-	Operations  []OperationAnnotation
-	Diagnostics []Diagnostic
+	Global     GlobalAnnotation
+	Operations []OperationAnnotation
 }
 
+// GlobalAnnotation 对应入口函数（通常是 main）上的全局注解。
 type GlobalAnnotation struct {
 	Title          string
 	Description    string
 	Version        string
 	TermsOfService string
-	Contact        ContactAnnotation
-	License        LicenseAnnotation
 
-	// OpenAPI 3: servers replace host/basePath/schemes.
-	// If Servers is empty but Host is set, the builder synthesizes a Server from Host+BasePath+Schemes.
+	Contact      ContactAnnotation
+	License      LicenseAnnotation
+	ExternalDocs ExternalDocsAnnotation
+
+	// swaggo 兼容：@host / @BasePath / @schemes → builder 阶段合成 servers[]
 	Host     string
 	BasePath string
 	Schemes  []string
-	Servers  []ServerAnnotation
 
-	ExternalDocs *ExternalDocsAnnotation
+	Servers      []ServerAnnotation
 	Tags         []TagAnnotation
 	SecurityDefs []SecurityDefAnnotation
 }
@@ -53,12 +38,12 @@ type LicenseAnnotation struct {
 	URL  string
 }
 
-type ServerAnnotation struct {
+type ExternalDocsAnnotation struct {
 	URL         string
 	Description string
 }
 
-type ExternalDocsAnnotation struct {
+type ServerAnnotation struct {
 	URL         string
 	Description string
 }
@@ -68,23 +53,36 @@ type TagAnnotation struct {
 	Description string
 }
 
-// SecurityDefAnnotation models a security scheme definition.
-// Supports: apiKey, http (basic/bearer), oauth2, openIdConnect.
+// SecurityDefAnnotation 描述一条安全方案定义（来自 @securityDefinitions.*）。
 type SecurityDefAnnotation struct {
-	Name             string
-	Type             string // "apiKey", "http", "oauth2", "openIdConnect"
-	In               string // apiKey: "header", "query", "cookie"
-	FieldName        string // apiKey: header/query param name
-	Scheme           string // http: "basic", "bearer"
-	BearerFormat     string // http bearer: e.g. "JWT"
-	Description      string
-	OAuthFlowType    string            // oauth2: "implicit", "password", "clientCredentials", "authorizationCode"
-	AuthorizationURL string            // oauth2
-	TokenURL         string            // oauth2
-	Scopes           map[string]string // oauth2: scope name → description
-	OpenIDConnectURL string            // openIdConnect
+	Name        string
+	Type        string // "apiKey" | "http" | "oauth2" | "openIdConnect"
+	Description string
+
+	// apiKey
+	In      string // "header" | "query" | "cookie"
+	KeyName string // 参数名
+
+	// http
+	Scheme       string // "basic" | "bearer"
+	BearerFormat string
+
+	// oauth2
+	Flows []OAuthFlowAnnotation
+
+	// openIdConnect
+	OpenIDConnectURL string
 }
 
+// OAuthFlowAnnotation 对应 OAuth2 的一种授权流。
+type OAuthFlowAnnotation struct {
+	Type             string            // "implicit" | "password" | "clientCredentials" | "authorizationCode"
+	AuthorizationURL string
+	TokenURL         string
+	Scopes           map[string]string // scope name → description
+}
+
+// OperationAnnotation 对应一个带 @Router 注解的处理函数。
 type OperationAnnotation struct {
 	FuncName    string
 	FilePath    string
@@ -93,12 +91,12 @@ type OperationAnnotation struct {
 	Summary     string
 	Description string
 	OperationID string
+	Accept      []string
+	Produce     []string
 	Route       RouteInfo
-	Accept      []string // request content types (e.g. "application/json")
-	Produce     []string // response content types
 	Params      []ParamAnnotation
-	RequestBody *RequestBodyAnnotation
 	Responses   []ResponseAnnotation
+	Headers     []HeaderAnnotation
 	Security    []SecurityRequirement
 	Deprecated  bool
 }
@@ -108,68 +106,35 @@ type RouteInfo struct {
 	Path   string
 }
 
+// ParamAnnotation 对应一行 @Param 注解。
 type ParamAnnotation struct {
 	Name        string
-	In          string // "path", "query", "header", "cookie"
+	In          string // "path" | "query" | "header" | "cookie" | "body" | "formData"
 	TypeName    string
 	Required    bool
 	Description string
 	Format      string
-	Default     string
-	Enums       []string
 }
 
-// TypeExpr represents a possibly-composite type expression.
-// Simple:    TypeName="User", Overrides=nil
-// Composite: TypeName="PageData", Overrides=[{Field:"data", TypeExpr:"[]User"}]
-type TypeExpr struct {
-	Name      string
-	Overrides []FieldOverride
-}
-
-// FieldOverride maps a struct field name to a replacement type expression.
-// e.g. PageData{data=[]User} → Field="data", TypeExpr="[]User"
-type FieldOverride struct {
-	Field    string
-	TypeExpr string
-}
-
-// RequestBodyAnnotation represents @Param with in=body or in=formData.
-type RequestBodyAnnotation struct {
-	TypeName    string
-	Type        TypeExpr
-	Required    bool
-	Description string
-	IsForm      bool // true if formData, false if JSON body
-	Fields      []FormFieldAnnotation
-}
-
-type FormFieldAnnotation struct {
-	Name        string
-	TypeName    string
-	Required    bool
-	Description string
-}
-
-// SecurityRequirement is a scheme name with optional scopes.
-type SecurityRequirement struct {
-	Name   string
-	Scopes []string
-}
-
+// ResponseAnnotation 对应一行 @Success / @Failure 注解。
 type ResponseAnnotation struct {
 	Code        string
 	TypeName    string
-	Type        TypeExpr
 	Description string
 	IsArray     bool
-	IsPrimitive bool // true for {string}, {integer}, {boolean}, {number}
-	Headers     []ResponseHeaderAnnotation
+	WrapType    string // "object" | "array" | "string" | "integer" | "number" | "boolean"
 }
 
-type ResponseHeaderAnnotation struct {
+// HeaderAnnotation 对应一行 @Header 注解。
+type HeaderAnnotation struct {
 	Code        string
-	Name        string
 	TypeName    string
+	Name        string
 	Description string
+}
+
+// SecurityRequirement 对应操作级别的 @Security 注解。
+type SecurityRequirement struct {
+	Name   string
+	Scopes []string
 }
