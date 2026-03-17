@@ -1836,7 +1836,7 @@ func TestBuilder_Build_JSON(t *testing.T) {
 // ── resolveQualifier 严格模式 ─────────────────────────────────────────────────
 
 // TestResolve_MissingImport 当 file 非 nil 且 qualifier 未出现在该文件的 import
-// 声明中时，Resolver 必须返回 nil（不能靠"猜测"包名找到类型）。
+// 声明中时，Resolver 应兜底在已加载文件中按包名查找，仍能成功解析。
 func TestResolve_MissingImport(t *testing.T) {
 	r, sb := newResolver()
 	r.SetFiles([]*parser.RawFile{{
@@ -1848,15 +1848,18 @@ func TestResolve_MissingImport(t *testing.T) {
 		}},
 	}})
 
-	// file 非 nil 但没有 models 的 import → 应返回 nil
+	// file 非 nil 但没有 models 的 import → 兜底搜索已加载文件，应返回 $ref
 	fileNoImport := &parser.RawFile{
 		Package:  "handlers",
 		FilePath: "/handlers/h.go",
-		Imports:  []parser.RawImport{}, // 故意为空
+		Imports:  []parser.RawImport{}, // 无 import，依赖兜底逻辑
 	}
 	s := sb.Build("models.User", fileNoImport)
-	if s != nil {
-		t.Errorf("should return nil when qualifier %q not in file imports, got %+v", "models", s)
+	if s == nil || s.Ref == "" {
+		t.Errorf("should resolve via fallback when qualifier %q not in file imports, got %+v", "models", s)
+	}
+	if r.Components().Schemas.Get("models.User") == nil {
+		t.Error("models.User should be registered in Components.Schemas via fallback")
 	}
 }
 
@@ -2103,7 +2106,8 @@ func TestResolve_NilFile_Permissive(t *testing.T) {
 	}
 }
 
-// TestResolve_MissingImport_Composite 组合类型的 base qualifier 缺少 import 时返回 nil。
+// TestResolve_MissingImport_Composite 组合类型的 base qualifier 缺少 import 时，
+// 应兜底在已加载文件中查找，仍能成功解析。
 func TestResolve_MissingImport_Composite(t *testing.T) {
 	r, sb := newResolver()
 	r.SetFiles([]*parser.RawFile{{
@@ -2118,24 +2122,25 @@ func TestResolve_MissingImport_Composite(t *testing.T) {
 	fileNoImport := &parser.RawFile{
 		Package:  "handlers",
 		FilePath: "/handlers/h.go",
-		// 没有 common 的 import
+		// 无 common import，依赖兜底逻辑
 	}
 	s := sb.Build("common.PageData{total=int}", fileNoImport)
-	if s != nil {
-		t.Errorf("composite type should return nil when qualifier not in imports, got %+v", s)
+	if s == nil {
+		t.Errorf("composite type should resolve via fallback when qualifier not in imports")
 	}
 	_ = r
 }
 
-// TestAnnotations_MissingImportCausesNilSchema 验证 fixture 文件中，
-// 若将 v1.go 的 import 去掉后，注解类型解析失败（Components.Schemas 中不含 models.Pet）。
-func TestAnnotations_MissingImportCausesNilSchema(t *testing.T) {
+// TestAnnotations_MissingImportFallback 验证 fixture 文件中，
+// 即使将 v1.go 的 import 清空，Resolver 也能通过兜底策略（在已加载文件中按包名查找）
+// 解析出 models.Pet、common.PageData 等跨包类型。
+func TestAnnotations_MissingImportFallback(t *testing.T) {
 	files := parseAnnotationsFixture(t)
 
 	// 模拟 v1.go 没有 import：从 v1.go 的 RawFile 中清空 imports
 	for _, f := range files {
 		if f.Package == "annotations" {
-			f.Imports = nil // 抹去所有 import
+			f.Imports = nil
 		}
 	}
 
@@ -2150,12 +2155,12 @@ func TestAnnotations_MissingImportCausesNilSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 注解中的 models.Pet、common.PageData 等应无法解析
-	if doc.Components.Schemas.Get("models.Pet") != nil {
-		t.Error("models.Pet should NOT be in Components.Schemas when import is missing")
+	// 兜底策略：即使没有 import，只要包在已加载文件中就能解析
+	if doc.Components.Schemas.Get("models.Pet") == nil {
+		t.Error("models.Pet should be resolved via fallback even when import is missing")
 	}
-	if doc.Components.Schemas.Get("common.PageData") != nil {
-		t.Error("common.PageData should NOT be in Components.Schemas when import is missing")
+	if doc.Components.Schemas.Get("common.PageData") == nil {
+		t.Error("common.PageData should be resolved via fallback even when import is missing")
 	}
 }
 

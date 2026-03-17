@@ -272,7 +272,13 @@ func (r *Resolver) resolveQualifier(qualifier string, file *parser.RawFile) stri
 			return imp.PkgName
 		}
 	}
-	return "" // qualifier 未出现在该文件的 import 声明中
+	// 兜底：当前文件未 import 该包，但 qualifier 可能直接就是已加载文件的包名
+	for _, rf := range r.files {
+		if rf.Package == qualifier {
+			return qualifier
+		}
+	}
+	return "" // qualifier 未出现在该文件的 import 声明中，且已加载文件中也无此包名
 }
 
 // ── 类型查找与 schema 构建 ────────────────────────────────────────────────────
