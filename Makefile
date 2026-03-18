@@ -67,6 +67,7 @@ example: ## Start the bookstore server (spec must already exist; run 'make gen' 
 	@echo "→ starting bookstore on :$(PORT)"
 	@echo "   Swagger UI : http://localhost:$(PORT)/docs"
 	@echo "   Redoc      : http://localhost:$(PORT)/redoc"
+	@echo "   Fdoc       : http://localhost:$(PORT)/fdoc"
 	@echo "   Raw JSON   : http://localhost:$(PORT)/openapi.json"
 	cd $(EXAMPLE_DIR) && go run .
 
@@ -75,6 +76,7 @@ example-fresh: gen ## Regenerate spec then start the bookstore server
 	@echo "→ starting bookstore on :$(PORT)"
 	@echo "   Swagger UI : http://localhost:$(PORT)/docs"
 	@echo "   Redoc      : http://localhost:$(PORT)/redoc"
+	@echo "   Fdoc       : http://localhost:$(PORT)/fdoc"
 	@echo "   Raw JSON   : http://localhost:$(PORT)/openapi.json"
 	cd $(EXAMPLE_DIR) && go run .
 

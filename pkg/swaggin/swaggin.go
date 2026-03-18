@@ -37,6 +37,7 @@
 package swaggin
 
 import (
+	_ "embed"
 	"fmt"
 	"net/http"
 	"os"
@@ -52,6 +53,8 @@ const (
 	SwaggerUI Renderer = "swagger-ui"
 	// Redoc renders Redoc at UIPath.
 	Redoc Renderer = "redoc"
+	// Fdoc renders Fdoc (@braydenyang/fdoc) at UIPath.
+	Fdoc Renderer = "fdoc"
 )
 
 const (
@@ -88,6 +91,10 @@ type Options struct {
 	// Default "" (disabled). Set to "-" to explicitly disable.
 	RedocPath string
 
+	// FdocPath registers an additional Fdoc route alongside the primary UI.
+	// Default "" (disabled). Set to "-" to explicitly disable.
+	FdocPath string
+
 	// Title is the HTML page title. Defaults to "API Documentation".
 	Title string
 
@@ -111,6 +118,8 @@ type Options struct {
 	CORSOrigin string
 }
 
+const defaultFaviconPath = "/favicon.ico"
+
 func (o *Options) applyDefaults() {
 	if o.JSONPath == "" {
 		o.JSONPath = defaultJSONPath
@@ -124,6 +133,7 @@ func (o *Options) applyDefaults() {
 	if o.Renderer == "" {
 		o.Renderer = SwaggerUI
 	}
+
 }
 
 // Register attaches the spec and UI routes to r.
@@ -148,6 +158,11 @@ func Register(r gin.IRouter, opts Options) {
 	if opts.RedocPath != "" && opts.RedocPath != "-" {
 		registerRoute(r, opts.RedocPath, RedocHandler(opts), opts)
 	}
+
+	if opts.FdocPath != "" && opts.FdocPath != "-" {
+		registerRoute(r, opts.FdocPath, FdocHandler(opts), opts)
+	}
+
 }
 
 // registerRoute registers a GET handler and, when CORS is enabled, also
@@ -181,9 +196,12 @@ func UIHandler(opts Options) gin.HandlerFunc {
 	opts.applyDefaults()
 	return func(c *gin.Context) {
 		var html string
-		if opts.Renderer == Redoc {
+		switch opts.Renderer {
+		case Redoc:
 			html = redocHTML(opts)
-		} else {
+		case Fdoc:
+			html = fdocHTML(opts)
+		default:
 			html = swaggerUIHTML(opts)
 		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
@@ -198,6 +216,17 @@ func RedocHandler(opts Options) gin.HandlerFunc {
 	opts.applyDefaults()
 	return func(c *gin.Context) {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(redocHTML(opts)))
+	}
+}
+
+// FdocHandler returns a HandlerFunc that always serves Fdoc, regardless of
+// the Renderer field. Use this to register Fdoc at a custom path.
+//
+//	r.GET("/fdoc", swaggin.FdocHandler(opts))
+func FdocHandler(opts Options) gin.HandlerFunc {
+	opts.applyDefaults()
+	return func(c *gin.Context) {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(fdocHTML(opts)))
 	}
 }
 
@@ -275,6 +304,26 @@ func swaggerUIHTML(opts Options) string {
     layout: 'BaseLayout'
   })
 </script>
+</body>
+</html>`, opts.Title, opts.JSONPath)
+}
+
+// fdocHTML generates the Fdoc page (@braydenyang/fdoc).
+func fdocHTML(opts Options) string {
+	return fmt.Sprintf(`<!doctype html>
+<html>
+<head>
+  <title>%s</title>
+  <link rel="icon" type="image/svg+xml" href="https://unpkg.com/@braydenyang/fdoc@latest/dist/lib/favicon.svg">
+  <link rel="stylesheet" href="https://unpkg.com/@braydenyang/fdoc@latest/dist/lib/style.css">
+  <style>html, body { margin: 0; height: 100%% }</style>
+</head>
+<body>
+  <div id="fdoc" style="height: 100vh"></div>
+  <script src="https://unpkg.com/@braydenyang/fdoc@latest/dist/lib/fdoc.iife.js"></script>
+  <script>
+    Fdoc.mount('#fdoc', { url: window.location.origin + %q })
+  </script>
 </body>
 </html>`, opts.Title, opts.JSONPath)
 }

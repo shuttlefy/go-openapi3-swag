@@ -134,7 +134,9 @@
       "Bash(go list -m all | grep openapi3)",
       "Bash(go test ./internal/builder/... -run \"TestResolve_ConstEnum\" -v 2>&1)",
       "Bash(go run ./cmd/swag3 -dirs examples/bookstore -output examples/bookstore/docs/openapi.json 2>&1)",
-      "Bash(bash .cursor/skills/sync-skills/scripts/sync.sh)"
+      "Bash(bash .cursor/skills/sync-skills/scripts/sync.sh)",
+      "Bash(go build ./pkg/swaggin/... && go test ./pkg/swaggin/... 2>&1)",
+      "Bash(go build ./pkg/swaggin/... 2>&1)"
     ]
   }
 }

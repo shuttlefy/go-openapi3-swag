@@ -66,13 +66,15 @@ func main() {
 	// swaggin.Register 挂载以下路由：
 	//   GET /openapi.json  →  原始 JSON spec（由 swag3 生成）
 	//   GET /docs          →  Swagger UI
-	//   GET /redoc         →  Redoc（同时注册两种 UI）
+	//   GET /redoc         →  Redoc
+	//   GET /fdoc          →  Fdoc
 	swaggin.Register(r, swaggin.Options{
 		SpecFile:  "docs/openapi.json",
 		Title:     "Bookstore API",
 		JSONPath:  "/openapi.json",
 		UIPath:    "/docs",
 		RedocPath: "/redoc",
+		FdocPath:  "/fdoc",
 		AllowCORS: true,
 	})
 

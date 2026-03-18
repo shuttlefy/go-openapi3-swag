@@ -4,7 +4,7 @@
 
 ## 职责
 
-将 swag3 生成的 OpenAPI 规范挂载到 Gin 路由，提供 Swagger UI 和 Redoc 两种文档界面。是本项目唯一的公开 API 包，不依赖任何 `internal/` 包。
+将 swag3 生成的 OpenAPI 规范挂载到 Gin 路由，提供 Swagger UI、Redoc、Fdoc 三种文档界面。是本项目唯一的公开 API 包，不依赖任何 `internal/` 包。
 
 ## 类型
 
@@ -16,6 +16,7 @@ type Renderer string
 const (
     SwaggerUI Renderer = "swagger-ui" // 默认，渲染 Swagger UI
     Redoc     Renderer = "redoc"      // 渲染 Redoc
+    Fdoc      Renderer = "fdoc"       // 渲染 Fdoc（@braydenyang/fdoc）
 )
 ```
 
@@ -29,6 +30,8 @@ type Options struct {
     UIPath      string   // UI 的 URL 路径，默认 "/docs"；设为 "-" 可禁用
     Renderer    Renderer // UI 类型，默认 SwaggerUI
     RedocPath   string   // 额外挂载 Redoc 的路径；留空不注册，设为 "-" 显式禁用
+    FdocPath    string   // 额外挂载 Fdoc 的路径；留空不注册，设为 "-" 显式禁用
+    FaviconPath string   // favicon 路由路径，默认 "/favicon.ico"；设为 "-" 禁用
     Title       string   // HTML 页面标题，默认 "API Documentation"
     AllowCORS   bool     // 是否启用 CORS
     CORSOrigin  string   // CORS 允许的 Origin，默认 "*"
@@ -50,14 +53,17 @@ func Register(r gin.IRouter, opts Options)
 | `GET {JSONPath}` | 返回原始 OpenAPI JSON |
 | `GET {UIPath}` | 返回 Swagger UI 或 Redoc HTML（`UIPath != "-"` 时注册） |
 | `GET {RedocPath}` | 返回 Redoc HTML（`RedocPath` 非空且不为 `"-"` 时注册） |
+| `GET {FdocPath}` | 返回 Fdoc HTML（`FdocPath` 非空且不为 `"-"` 时注册） |
+| `GET {FaviconPath}` | 返回内嵌的 `favicon.svg`，默认路径 `/favicon.ico` |
 | `OPTIONS *` | CORS 预检，每条 GET 路由均注册（仅 `AllowCORS=true` 时） |
 
 ### Handler 单独使用
 
 ```go
 func SpecHandler(opts Options) gin.HandlerFunc  // 原始 spec
-func UIHandler(opts Options) gin.HandlerFunc    // Swagger UI
-func RedocHandler(opts Options) gin.HandlerFunc // Redoc
+func UIHandler(opts Options) gin.HandlerFunc    // Swagger UI / Redoc / Fdoc（由 Renderer 决定）
+func RedocHandler(opts Options) gin.HandlerFunc // 始终渲染 Redoc
+func FdocHandler(opts Options) gin.HandlerFunc  // 始终渲染 Fdoc
 ```
 
 ## 快速集成示例
