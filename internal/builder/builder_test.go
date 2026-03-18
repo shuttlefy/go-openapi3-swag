@@ -1280,6 +1280,68 @@ func TestResolve_ConstEnum_Int(t *testing.T) {
 	}
 }
 
+func TestResolve_ConstEnum_WithComments(t *testing.T) {
+	r, sb := newResolver()
+	r.SetFiles([]*parser.RawFile{{
+		Package:  "models",
+		FilePath: "/models/status.go",
+		Consts: []parser.RawConst{
+			{Name: "StatusActive", TypeName: "Status", Value: "active", Comments: []string{"活跃"}},
+			{Name: "StatusInactive", TypeName: "Status", Value: "inactive", Comments: []string{"未激活"}},
+			{Name: "StatusDeleted", TypeName: "Status", Value: "deleted"},
+		},
+	}})
+
+	sb.Build("models.Status", nil)
+	registered := r.Components().Schemas.Get("models.Status")
+	if registered == nil {
+		t.Fatal("models.Status not found in Components.Schemas")
+	}
+
+	varnames, ok := registered.Extensions.GetStringSlice("x-enum-varnames")
+	if !ok || len(varnames) != 3 {
+		t.Fatalf("x-enum-varnames = %v, want 3 elements", varnames)
+	}
+	if varnames[0] != "StatusActive" || varnames[1] != "StatusInactive" || varnames[2] != "StatusDeleted" {
+		t.Errorf("x-enum-varnames = %v", varnames)
+	}
+
+	descs, ok := registered.Extensions.GetStringSlice("x-enumdescriptions")
+	if !ok || len(descs) != 3 {
+		t.Fatalf("x-enumdescriptions = %v, want 3 elements", descs)
+	}
+	if descs[0] != "活跃" || descs[1] != "未激活" || descs[2] != "" {
+		t.Errorf("x-enumdescriptions = %v", descs)
+	}
+}
+
+func TestResolve_ConstEnum_NoComments_NoDescriptions(t *testing.T) {
+	r, sb := newResolver()
+	r.SetFiles([]*parser.RawFile{{
+		Package:  "models",
+		FilePath: "/models/dir.go",
+		Consts: []parser.RawConst{
+			{Name: "DirNorth", TypeName: "Direction", Value: "0"},
+			{Name: "DirSouth", TypeName: "Direction", Value: "1"},
+		},
+	}})
+
+	sb.Build("models.Direction", nil)
+	registered := r.Components().Schemas.Get("models.Direction")
+	if registered == nil {
+		t.Fatal("models.Direction not found in Components.Schemas")
+	}
+
+	if _, ok := registered.Extensions.GetStringSlice("x-enumdescriptions"); ok {
+		t.Error("x-enumdescriptions should not be set when no const has comments")
+	}
+
+	varnames, ok := registered.Extensions.GetStringSlice("x-enum-varnames")
+	if !ok || len(varnames) != 2 {
+		t.Fatalf("x-enum-varnames = %v, want 2 elements", varnames)
+	}
+}
+
 // ── Resolver.Resolve — package alias ─────────────────────────────────────────
 
 func TestResolve_PackageAlias(t *testing.T) {

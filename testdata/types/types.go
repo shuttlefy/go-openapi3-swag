@@ -223,29 +223,29 @@ type Flags uint32
 type Status string
 
 const (
-	StatusActive   Status = "active"
-	StatusInactive Status = "inactive"
-	StatusDeleted  Status = "deleted"
+	StatusActive   Status = "active"   // 活跃
+	StatusInactive Status = "inactive" // 未激活
+	StatusDeleted  Status = "deleted"  // 已删除
 )
 
 // Direction 是一个 int 枚举（iota）。
 type Direction int
 
 const (
-	DirectionNorth Direction = iota
-	DirectionSouth
-	DirectionEast
-	DirectionWest
+	DirectionNorth Direction = iota // 北
+	DirectionSouth                  // 南
+	DirectionEast                   // 东
+	DirectionWest                   // 西
 )
 
 // Priority 混合 iota 位移运算。
 type Priority int
 
 const (
-	PriorityLow    Priority = 1 << iota // 1
-	PriorityMedium                      // 2
-	PriorityHigh                        // 4
-	PriorityCritical                    // 8
+	PriorityLow      Priority = 1 << iota // 低优先级
+	PriorityMedium                        // 中优先级
+	PriorityHigh                          // 高优先级
+	PriorityCritical                      // 紧急
 )
 
 // ─────────────────────────────────────────────

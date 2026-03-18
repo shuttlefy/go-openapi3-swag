@@ -126,7 +126,15 @@
       "Bash(python3 - << 'EOF'\ncontent = open\\('internal/extractor/extractor.go', 'r'\\).read\\(\\)\n\nold = \"\"\"\\\\t\\\\t\\\\ttags, plain := parseCommentLines\\(fn.Comments\\)\n\n\\\\t\\\\t\\\\t// \\\\u5e94\\\\u7528\\\\u5168\\\\u5c40\\\\u6807\\\\u7b7e\\\\uff08@title\\\\u3001@version \\\\u7b49\\\\uff09\n\\\\t\\\\t\\\\tapplyGlobalTags\\(tags, &result.Global, secCtx\\)\n\n\\\\t\\\\t\\\\t// \\\\u82e5\\\\u5305\\\\u542b @Router\\\\uff0c\\\\u6784\\\\u5efa\\\\u64cd\\\\u4f5c\\\\u6ce8\\\\u89e3\n\\\\t\\\\t\\\\tif route, ok := findRouterTag\\(tags\\); ok {\n\\\\t\\\\t\\\\t\\\\top, err := buildOperation\\(fn, tags, plain, route\\)\n\\\\t\\\\t\\\\t\\\\tif err != nil {\n\\\\t\\\\t\\\\t\\\\t\\\\treturn nil, fmt.Errorf\\(\"%s:%d: %w\", rf.FilePath, fn.Line, err\\)\n\\\\t\\\\t\\\\t\\\\t}\n\\\\t\\\\t\\\\t\\\\tresult.Operations = append\\(result.Operations, op\\)\n\\\\t\\\\t\\\\t}\"\"\"\n\nnew = \"\"\"\\\\t\\\\t\\\\ttags, plain := parseCommentLines\\(fn.Comments\\)\n\n\\\\t\\\\t\\\\t// \\\\u4ec5\\\\u5728\\\\u975e\\\\u64cd\\\\u4f5c\\\\u51fd\\\\u6570\\\\uff08\\\\u65e0 @Router\\\\uff09\\\\u65f6\\\\u5e94\\\\u7528\\\\u5168\\\\u5c40\\\\u6807\\\\u7b7e\\\\uff0c\\\\u907f\\\\u514d\\\\u64cd\\\\u4f5c\\\\u7ea7 @description \\\\u6c61\\\\u67d3 info.description\n\\\\t\\\\t\\\\tif route, ok := findRouterTag\\(tags\\); ok {\n\\\\t\\\\t\\\\t\\\\top, err := buildOperation\\(fn, tags, plain, route\\)\n\\\\t\\\\t\\\\t\\\\tif err != nil {\n\\\\t\\\\t\\\\t\\\\t\\\\treturn nil, fmt.Errorf\\(\"%s:%d: %w\", rf.FilePath, fn.Line, err\\)\n\\\\t\\\\t\\\\t\\\\t}\n\\\\t\\\\t\\\\t\\\\tresult.Operations = append\\(result.Operations, op\\)\n\\\\t\\\\t\\\\t} else {\n\\\\t\\\\t\\\\t\\\\tapplyGlobalTags\\(tags, &result.Global, secCtx\\)\n\\\\t\\\\t\\\\t}\"\"\"\n\nif old in content:\n    content = content.replace\\(old, new, 1\\)\n    open\\('internal/extractor/extractor.go', 'w'\\).write\\(content\\)\n    print\\(\"Done\"\\)\nelse:\n    print\\(\"NOT FOUND\"\\)\nEOF)",
       "Bash(go build ./internal/extractor/...)",
       "Bash(go test ./internal/extractor/... -v 2>&1 | tail -20)",
-      "Bash(go build ./... && go test ./... 2>&1)"
+      "Bash(go build ./... && go test ./... 2>&1)",
+      "Bash(grep -r \"x-enum\" /data/home/brayden/projects/swag3 --include=\"*.go\" --include=\"*.md\" 2>/dev/null | head -20)",
+      "Bash(find /data/home/brayden/projects/swag3 -type f -name \"*.go\" -exec grep -l \"Extensions\\\\|x-enum\\\\|VarNames\\\\|Descriptions\" {} \\\\;)",
+      "Bash(find /data/home/brayden/projects/swag3 -name \"*.go\" -type f -exec grep -l \"type Schema struct\" {} \\\\;)",
+      "Bash(go env GOPATH)",
+      "Bash(go list -m all | grep openapi3)",
+      "Bash(go test ./internal/builder/... -run \"TestResolve_ConstEnum\" -v 2>&1)",
+      "Bash(go run ./cmd/swag3 -dirs examples/bookstore -output examples/bookstore/docs/openapi.json 2>&1)",
+      "Bash(bash .cursor/skills/sync-skills/scripts/sync.sh)"
     ]
   }
 }

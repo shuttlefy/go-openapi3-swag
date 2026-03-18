@@ -649,9 +649,26 @@ func buildEnumSchema(consts []parser.RawConst) *spec3.Schema {
 	} else {
 		schema.Type = "string"
 	}
+
+	varnames := make([]string, 0, len(consts))
+	descriptions := make([]string, 0, len(consts))
+	hasDesc := false
+
 	for _, c := range consts {
 		schema.Enum = append(schema.Enum, c.Value)
+		varnames = append(varnames, c.Name)
+		desc := strings.Join(c.Comments, " ")
+		descriptions = append(descriptions, desc)
+		if desc != "" {
+			hasDesc = true
+		}
 	}
+
+	schema.Extensions.Set("x-enum-varnames", varnames)
+	if hasDesc {
+		schema.Extensions.Set("x-enumdescriptions", descriptions)
+	}
+
 	return schema
 }
 

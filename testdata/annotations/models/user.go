@@ -4,9 +4,9 @@ package models
 type UserRole string
 
 const (
-	UserRoleAdmin UserRole = "admin"
-	UserRoleUser  UserRole = "user"
-	UserRoleGuest UserRole = "guest"
+	UserRoleAdmin UserRole = "admin" // 管理员
+	UserRoleUser  UserRole = "user"  // 普通用户
+	UserRoleGuest UserRole = "guest" // 访客
 )
 
 // Address 地址。

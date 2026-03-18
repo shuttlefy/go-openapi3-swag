@@ -9,9 +9,9 @@ import "time"
 type PetStatus string
 
 const (
-	PetStatusAvailable PetStatus = "available"
-	PetStatusPending   PetStatus = "pending"
-	PetStatusSold      PetStatus = "sold"
+	PetStatusAvailable PetStatus = "available" // 可领养
+	PetStatusPending   PetStatus = "pending"   // 待确认
+	PetStatusSold      PetStatus = "sold"      // 已售出
 )
 
 // ── 叶节点 ─────────────────────────────────────────────────────────────────────

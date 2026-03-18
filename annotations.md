@@ -80,75 +80,116 @@
 
 ## 二、安全方案定义（Security Definitions）
 
-写在全局注解同一函数中。采用多行声明模式。
+写在全局注解（`main` 函数）的注释中，采用多行声明模式。每种方案固定两段式：
+
+```
+// @securityDefinitions.{类型}           方案名称   ← 第一行：声明方案，值为方案名
+// @securityDefinitions.{类型}.{子属性}  值          ← 后续行：设置子属性
+```
+
+标签名**不区分大小写**。支持的类型汇总：
+
+| 类型关键字 | OpenAPI type | 说明 |
+|------------|-------------|------|
+| `apikey` | `apiKey` | API Key |
+| `basic` | `http` (scheme=basic) | HTTP Basic 认证 |
+| `bearer` | `http` (scheme=bearer) | HTTP Bearer Token |
+| `oauth2.implicit` | `oauth2` | OAuth2 隐式授权 |
+| `oauth2.password` | `oauth2` | OAuth2 密码授权 |
+| `oauth2.clientCredentials` | `oauth2` | OAuth2 客户端凭证 |
+| `oauth2.authorizationCode` | `oauth2` | OAuth2 授权码 |
+| `openIdConnect` | `openIdConnect` | OpenID Connect |
+
+---
 
 ### API Key
 
 ```go
 // @securityDefinitions.apikey ApiKeyAuth
-// @securityDefinitions.apikey.in header
-// @securityDefinitions.apikey.name X-API-Key
-// @securityDefinitions.apikey.description API key authentication
+// @securityDefinitions.apikey.in     header
+// @securityDefinitions.apikey.name   X-API-Key
+// @securityDefinitions.apikey.description API key 认证，写入请求头 X-API-Key
 ```
 
-| 子属性 | 说明 | 可选值 |
-|--------|------|--------|
-| `.in` | 传递位置 | `header`, `query`, `cookie` |
-| `.name` | 参数名称 | 任意字符串 |
-| `.description` | 描述 | 任意字符串 |
+| 子属性 | 必填 | 说明 | 可选值 |
+|--------|------|------|--------|
+| `.in` | ✓ | 传递位置 | `header`, `query`, `cookie` |
+| `.name` | ✓ | Header / 参数名称 | 任意字符串 |
+| `.description` | — | 描述 | 任意字符串 |
+
+---
 
 ### HTTP Basic
 
 ```go
 // @securityDefinitions.basic BasicAuth
+// @securityDefinitions.basic.description HTTP Basic 认证
 ```
 
-自动设置 `type=http`, `scheme=basic`。
+自动设置 `type=http`、`scheme=basic`。
+
+| 子属性 | 必填 | 说明 |
+|--------|------|------|
+| `.description` | — | 描述 |
+
+---
 
 ### HTTP Bearer
 
 ```go
 // @securityDefinitions.bearer BearerAuth
 // @securityDefinitions.bearer.bearerFormat JWT
+// @securityDefinitions.bearer.description JWT Bearer Token 认证
 ```
 
-| 子属性 | 说明 |
-|--------|------|
-| `.bearerFormat` | Token 格式，如 `JWT` |
-| `.description` | 描述 |
+| 子属性 | 必填 | 说明 |
+|--------|------|------|
+| `.bearerFormat` | — | Token 格式，如 `JWT` |
+| `.description` | — | 描述 |
+
+---
 
 ### OAuth2
 
-OAuth2 需要指定流类型。支持的流类型：
+OAuth2 需要在类型关键字中指定流类型，每种流类型所需 URL 不同：
 
-| 流类型 | 说明 |
-|--------|------|
-| `implicit` | 隐式授权 |
-| `password` | 密码授权 |
-| `clientCredentials` | 客户端凭证 |
-| `authorizationCode` | 授权码 |
+| 流类型 | 需要 `authorizationUrl` | 需要 `tokenUrl` |
+|--------|------------------------|----------------|
+| `oauth2.implicit` | ✓ | — |
+| `oauth2.password` | — | ✓ |
+| `oauth2.clientCredentials` | — | ✓ |
+| `oauth2.authorizationCode` | ✓ | ✓ |
 
 ```go
 // @securityDefinitions.oauth2.authorizationCode OAuth2
 // @securityDefinitions.oauth2.authorizationCode.authorizationUrl https://example.com/oauth/authorize
-// @securityDefinitions.oauth2.authorizationCode.tokenUrl https://example.com/oauth/token
-// @securityDefinitions.oauth2.authorizationCode.scope.read "Read access"
-// @securityDefinitions.oauth2.authorizationCode.scope.write "Write access"
+// @securityDefinitions.oauth2.authorizationCode.tokenUrl         https://example.com/oauth/token
+// @securityDefinitions.oauth2.authorizationCode.scope.read       "只读权限"
+// @securityDefinitions.oauth2.authorizationCode.scope.write      "写权限"
+// @securityDefinitions.oauth2.authorizationCode.description      OAuth2 授权码模式
 ```
 
-| 子属性 | 说明 |
-|--------|------|
-| `.authorizationUrl` | 授权端点 URL |
-| `.tokenUrl` | Token 端点 URL |
-| `.scope.{名称}` | 作用域定义，值为描述 |
-| `.description` | 描述 |
+| 子属性 | 必填 | 说明 |
+|--------|------|------|
+| `.authorizationUrl` | 视流类型 | 授权端点 URL |
+| `.tokenUrl` | 视流类型 | Token 端点 URL |
+| `.scope.{名称}` | — | 作用域，值为描述字符串（可加引号） |
+| `.description` | — | 描述 |
+
+---
 
 ### OpenID Connect
 
 ```go
 // @securityDefinitions.openIdConnect MyOIDC
 // @securityDefinitions.openIdConnect.openIdConnectUrl https://example.com/.well-known/openid-configuration
+// @securityDefinitions.openIdConnect.description OpenID Connect 认证
 ```
+
+| 子属性 | 必填 | 说明 |
+|--------|------|------|
+| `.openIdConnectUrl` | ✓ | Discovery 文档 URL |
+| `.description` | — | 描述 |
 
 ---
 
@@ -166,8 +207,7 @@ OAuth2 需要指定流类型。支持的流类型：
 
 | 部分 | 说明 |
 |------|------|
-| `包名` | import path 的最后一段（如 `models`），**或**显式 import alias（如 `m`） |
-| `(别名)` | 标注形式，表示两者任选其一 |
+| `包名` | Go 源文件中 `package` 声明的名称（如 `models`），**或**该包的 import alias；两者均可，最终 schema 名称统一使用真实包名 |
 | `[函数名.]` | 可选；引用定义在**某函数体内部**的局部 struct 时使用 |
 | `类型名` | Go 导出类型名 |
 
@@ -176,18 +216,74 @@ OAuth2 需要指定流类型。支持的流类型：
 **数组**在类型名前加 `[]`：`[]models.User`
 
 ```go
-// 正确 ✓
+// 正确 ✓ — 使用包名
 // @Success 200 {object} models.User "OK"
 // @Success 200 {array}  []models.User "OK"
 // @Param   body body    models.CreateUserRequest true "body"
 // @Success 200 {object} handlers.CreateUser.Request "OK"   // 函数局部类型
+
+// 正确 ✓ — 使用 import alias（最终 schema 名称仍为真实包名）
+// import m "github.com/example/models"
+// @Success 200 {object} m.User "OK"   // → $ref: models.User
 
 // 错误 ✗ — 缺少包名限定
 // @Success 200 {object} User "OK"
 // @Param   body body    CreateUserRequest true "body"
 ```
 
+> 工具解析时优先按 alias 匹配，其次按包名匹配；**无论注解中写的是 alias 还是包名，最终注册到 `components/schemas` 的 key 均使用真实包名**。
+
+**同名包冲突时必须使用别名**
+
+若同一文件引入了两个 `package` 声明名称相同的包（如 v1、v2 多版本），在 Go 代码中必须为其中至少一个设置 import alias，注解中也使用该 alias 加以区分：
+
+```go
+import (
+    modelsv1 "github.com/example/api/v1/models"  // package models
+    modelsv2 "github.com/example/api/v2/models"  // package models（同名）
+)
+
+// @Param body body modelsv1.CreateRequest true "v1 请求体"
+// @Param body body modelsv2.CreateRequest true "v2 请求体"
+```
+
+> 注意：上例两个包的真实包名均为 `models`，最终 schema 分别注册为 `models.CreateRequest`（v1）和 `models.CreateRequest`（v2）——**若两个包存在同名类型，会产生 key 冲突**，详见下方「Components/Schemas 命名规则」。
+
 > **同包类型也须加包名**。注解由工具跨文件解析，无法依赖"当前包"上下文推断。
+
+> **无需显式 import（仅限真实包名）**。当注解中使用的是真实包名（`package` 声明名称）时，即使当前文件没有对应的 `import`，工具也会在所有已扫描文件中按包名兜底查找，引用仍能正常解析。若注解中使用的是 import alias，则必须在当前文件中显式声明该 import，否则解析失败。
+
+### Components/Schemas 命名规则
+
+工具将所有复杂类型注册到 `components/schemas`，命名规则如下：
+
+| 类型 | Schema 名称格式 | 示例 |
+|------|----------------|------|
+| 包级 struct / enum | `pkg.TypeName` | `models.User` |
+| 函数内局部 struct | `pkg.FuncName.TypeName` | `handlers.CreateUser.Request` |
+| 泛型实例化 | `pkg.TypeName[ArgKey,...]` | `common.Resp[models.User]` |
+| 组合类型 `Base{field=T}` | **不注册**（内联 `allOf`） | — |
+| 透明类型别名 `type A = B` | 穿透为 B 的名称 | — |
+| 非 struct 类型定义（map 等） | 穿透，不注册自身 | — |
+| 原始类型（string/int/...） | **不注册**（内联 schema） | — |
+
+`$ref` 路径直接以 schema 名称拼接：`#/components/schemas/models.User`。
+
+**同名包（import alias）的 schema 冲突**
+
+Schema 名称始终使用 Go 源文件中 `package` 声明的真实包名，**import alias 不会体现在 schema 名称中**。因此，如果两个包的 `package` 声明名称相同（如都是 `models`），它们的类型会共享同一个命名空间：
+
+```
+modelsv1 "github.com/example/api/v1/models"  // package models
+modelsv2 "github.com/example/api/v2/models"  // package models
+
+modelsv1.Order  →  components/schemas/models.Order
+modelsv2.Order  →  components/schemas/models.Order  ← 与上面冲突！
+```
+
+发生 key 冲突时，**先被解析到的类型胜出**，后者的 `$ref` 指向的是错误的 schema。
+
+> **规避方法**：确保同一次扫描中不存在两个 `package` 声明名称相同且含有同名类型的包。如必须同时引用，考虑在源码层面为其中一个包通过 `package` 声明改名（如 `modelsv2`），而非仅设置 import alias。
 
 ### 基本信息
 
@@ -273,17 +369,26 @@ OAuth2 需要指定流类型。支持的流类型：
 当名称写为 `""` 时，工具会将 struct 的每个字段展开为独立的同位置参数，适用于将请求过滤条件、分页参数等集中定义在一个 struct 中的场景。
 
 ```
-// @Param "" 位置 包名.StructType 必填 "描述"
+// @Param "" 位置 类型引用 必填 "描述"
 ```
 
+类型引用支持三种格式（与模型名引用规则一致）：
+
+| 格式 | 说明 |
+|------|------|
+| `包名.TypeName` | 包级 struct |
+| `包名.FuncName.TypeName` | 函数内局部 struct |
+| `TypeName` | 当前包的 struct（同包引用） |
+
 **规则：**
-- 名称必须为 `""`，类型必须是 struct 引用（`包名.TypeName`）；原始类型使用 `""` 名称属于错误。
+- 名称必须为 `""`，类型必须是 struct 引用；原始类型（`string`、`integer` 等）使用 `""` 名称属于错误。
 - 仅支持 `query`、`header`、`cookie` 位置（非 `body` / `formData`）。
 - struct 的字段约束（`json` 名称、`binding:"required"`、`format`、`enums`、`example`、`minimum`/`maximum` 等 struct tag）全部保留。
 - `json:"-"` 字段自动跳过。
 - 嵌入字段（embedded struct）递归展开。
+- 类型所在包无需在当前文件中 `import`，工具会在已扫描的所有文件中兜底查找。
 
-**示例：**
+**示例一：包级 struct**
 
 ```go
 // models/query.go
@@ -300,14 +405,24 @@ type BookQuery struct {
 // @Router /books [get]
 ```
 
-等价于逐一声明：
+**示例二：函数内局部 struct**
 
 ```go
-// @Param category query string  false "..."
-// @Param in_stock query boolean false "..."
-// @Param page     query integer false "..."
-// @Param size     query integer false "..."
+// GetSubnet 查询子网列表。
+//
+// @Param "" query controller.GetSubnet.Request false "查询条件"
+// @Router /subnet/list [get]
+func GetSubnet(c *gin.Context) {
+    type Request struct {
+        VpcID  string `json:"vpc_id"`
+        Region string `json:"region"`
+        Page   int    `json:"page" minimum:"1" default:"1"`
+    }
+    // ...
+}
 ```
+
+以上两种写法等价于逐一声明各字段为独立的 `query` 参数。
 
 ### 请求体（Request Body）
 
