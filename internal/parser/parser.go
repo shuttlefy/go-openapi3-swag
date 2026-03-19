@@ -257,6 +257,10 @@ func extractFields(field *ast.Field) []RawField {
 	// 具名字段（多个名共享同一类型时展开）
 	result := make([]RawField, 0, len(field.Names))
 	for _, ident := range field.Names {
+		// 小写开头的字段为未导出字段，不计入 schema
+		if len(ident.Name) > 0 && ident.Name[0] >= 'a' && ident.Name[0] <= 'z' {
+			continue
+		}
 		result = append(result, RawField{
 			Name:     ident.Name,
 			TypeName: typeName,
