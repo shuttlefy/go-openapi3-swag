@@ -1,5 +1,5 @@
 # Binaries
-swag3
+/swag3
 *.exe
 *.exe~
 *.dll
@@ -22,7 +22,7 @@ go.work.sum
 *.swp
 *.swo
 debug*
-
+bin/
 # OS
 .DS_Store
 Thumbs.db
