@@ -11,7 +11,8 @@ import (
 
 // OperationBuilder 将 OperationAnnotation 转换为 spec3.Operation。
 type OperationBuilder struct {
-	schema *SchemaBuilder
+	schema             *SchemaBuilder
+	queryStructExplode bool // query 注解类型为 struct 时自动打散
 }
 
 func NewOperationBuilder(schema *SchemaBuilder) *OperationBuilder {
@@ -42,12 +43,24 @@ func (ob *OperationBuilder) Build(
 			continue
 		}
 		if p.Name == "" {
-			// 匿名打散：将 struct 字段展开为同位置的独立参数
+			// 显式打散：将 struct 字段展开为同位置的独立参数
 			expanded, err := ob.expandStructParams(p, file)
 			if err != nil {
 				return nil, err
 			}
 			oper.Parameters = append(oper.Parameters, expanded...)
+		} else if ob.queryStructExplode && strings.ToLower(p.In) == "query" {
+			// 自动打散：query 参数类型为 struct 时展开；非 struct 退回为普通参数
+			rawStruct, _ := ob.schema.resolver.FindRawStruct(p.TypeName, file)
+			if rawStruct != nil {
+				expanded, err := ob.expandStructParams(p, file)
+				if err != nil {
+					return nil, err
+				}
+				oper.Parameters = append(oper.Parameters, expanded...)
+			} else {
+				oper.Parameters = append(oper.Parameters, ob.buildParam(p, file))
+			}
 		} else {
 			oper.Parameters = append(oper.Parameters, ob.buildParam(p, file))
 		}

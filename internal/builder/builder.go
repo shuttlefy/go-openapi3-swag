@@ -31,6 +31,12 @@ func (b *Builder) SetLoader(loader PackageLoader) {
 	b.resolver.SetLoader(loader)
 }
 
+// SetQueryStructExplode 控制 query 注解类型为 struct 时是否自动打散字段。
+// 默认 false（不打散）；设为 true 后，所有 in=query 的 struct 类型参数将自动展开。
+func (b *Builder) SetQueryStructExplode(v bool) {
+	b.op.queryStructExplode = v
+}
+
 // NewModuleLoader 创建基于 go.mod 模块缓存的 PackageLoader。
 // modInfo 通过 parser.ParseGoMod 获得，cacheDir 通过 parser.ModuleCacheDir 获得。
 func NewModuleLoader(modInfo *parser.ModuleInfo, cacheDir string) PackageLoader {

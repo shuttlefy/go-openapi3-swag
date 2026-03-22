@@ -20,6 +20,7 @@
 ```go
 func NewBuilder() *Builder
 func (b *Builder) SetLoader(loader PackageLoader)
+func (b *Builder) SetQueryStructExplode(v bool)
 func (b *Builder) Build(result *extractor.ExtractResult, files []*parser.RawFile) (*spec3.OpenAPI, error)
 ```
 
@@ -203,7 +204,8 @@ func (ob *OperationBuilder) Build(op extractor.OperationAnnotation, fileIndex ma
 处理逻辑：
 
 1. **`@Param`（非 body/formData）** → `spec3.Parameter`，类型调用 `SchemaBuilder.Build`
-2. **Struct 打散**（`name=""`）→ 展开 struct 所有字段为独立 `Parameter`
+2. **Struct 打散（显式）**（`name=""`）→ 展开 struct 所有字段为独立 `Parameter`
+3. **Struct 打散（自动）** → 当 `queryStructExplode=true` 且 `in=query` 时，若类型解析为 struct，自动展开字段；类型不是 struct 时退回为普通 `Parameter`
 3. **`@Param body`** → `spec3.RequestBody`，content-type 由 `@Accept` 决定（默认 `application/json`）
 4. **`@Param formData`** → `spec3.RequestBody`，content-type 为 `multipart/form-data`
 5. **`@Success` / `@Failure`** → `spec3.Response`，schema 由 `SchemaBuilder.Build` 解析

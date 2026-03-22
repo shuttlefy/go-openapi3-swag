@@ -30,6 +30,7 @@ func main() {
 
 	// 3. Build（始终启用模块缓存懒加载）
 	b := builder.NewBuilder()
+	b.SetQueryStructExplode(cfg.QueryStructExplode)
 	modInfo, err := parser.ParseGoMod(cfg.GoMod)
 	if err != nil {
 		log.Printf("warn: parse go.mod: %v (module loader disabled)", err)

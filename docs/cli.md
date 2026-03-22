@@ -17,6 +17,7 @@ swag3 -dirs <目录> [选项]
 | `-openapi-ver` | 字符串 | `3.2.0` | 输出的 OpenAPI 版本号（支持 3.0.3 / 3.1.0 / 3.2.0） |
 | `-depth` | 整数 | `-1` | 目录递归深度：`-1`=无限，`0`=仅当前，`N`=最多 N 层 |
 | `-gomod` | 字符串 | `go.mod` | go.mod 路径，用于模块缓存懒加载 |
+| `-query-struct-explode` | 布尔 | `false` | `query` 注解类型为 struct 时自动展开字段（打散） |
 
 ### 示例
 

@@ -6,11 +6,12 @@ import (
 )
 
 type Config struct {
-	InputDirs  StringSlice
-	OutputFile string
-	OpenAPIVer string // "3.0.3"（默认）| "3.1.0"
-	ParseDepth int    // 目录递归深度：0=仅当前目录，N=最多N层，-1=无限
-	GoMod      string // go.mod 文件路径（默认 ./go.mod）
+	InputDirs          StringSlice
+	OutputFile         string
+	OpenAPIVer         string // "3.0.3"（默认）| "3.1.0"
+	ParseDepth         int    // 目录递归深度：0=仅当前目录，N=最多N层，-1=无限
+	GoMod              string // go.mod 文件路径（默认 ./go.mod）
+	QueryStructExplode bool   // query 注解类型为 struct 时自动打散
 }
 
 // 定义自定义类型
@@ -34,6 +35,7 @@ func ParseFlags() *Config {
 	flag.IntVar(&cfg.ParseDepth, "depth", -1, "directory recursion depth: 0=root only, N=N levels, -1=unlimited")
 	flag.StringVar(&cfg.OpenAPIVer, "openapi-ver", "3.2.0", "OpenAPI version: 3.0.3 | 3.1.0 | 3.2.0")
 	flag.StringVar(&cfg.GoMod, "gomod", "go.mod", "path to go.mod file")
+	flag.BoolVar(&cfg.QueryStructExplode, "query-struct-explode", false, "auto-explode struct types in query parameters into individual fields")
 	flag.Parse()
 
 	if len(cfg.InputDirs) == 0 {

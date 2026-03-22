@@ -12,11 +12,12 @@
 
 ```go
 type Config struct {
-    InputDirs  StringSlice // -dirs：扫描目录列表
-    OutputFile string      // -output：输出文件路径
-    OpenAPIVer string      // -openapi-ver：OpenAPI 版本号
-    ParseDepth int         // -depth：目录递归深度
-    GoMod      string      // -gomod：go.mod 路径
+    InputDirs          StringSlice // -dirs：扫描目录列表
+    OutputFile         string      // -output：输出文件路径
+    OpenAPIVer         string      // -openapi-ver：OpenAPI 版本号
+    ParseDepth         int         // -depth：目录递归深度
+    GoMod              string      // -gomod：go.mod 路径
+    QueryStructExplode bool        // -query-struct-explode：query 注解类型为 struct 时自动打散
 }
 ```
 
@@ -44,5 +45,6 @@ swag3 -dirs ./cmd -dirs ./internal
 | `OpenAPIVer` | `3.2.0` |
 | `ParseDepth` | `-1`（无限递归） |
 | `GoMod` | `go.mod` |
+| `QueryStructExplode` | `false` |
 
 `Title` 和 `Version` 不作为 CLI 参数，由源码注解（`@title` / `@version`）决定。
