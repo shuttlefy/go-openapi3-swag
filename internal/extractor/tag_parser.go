@@ -17,15 +17,28 @@ type tagLine struct {
 
 // parseCommentLines 将 RawFunc.Comments 分为注解行（tagLine）和普通文本行。
 // 标签名不区分大小写，统一转为小写。
+// 普通文本行中，两段内容之间的空行（""）保留为 "" 以支持 Markdown 段落分隔；
+// 前导和尾随空行忽略，多个连续空行折叠为一个。
 func parseCommentLines(lines []string) (tags []tagLine, plain []string) {
+	pendingBlank := false
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "@") {
-			if line != "" {
+			if line == "" {
+				if len(plain) > 0 {
+					pendingBlank = true
+				}
+			} else {
+				if pendingBlank {
+					plain = append(plain, "")
+					pendingBlank = false
+				}
 				plain = append(plain, line)
 			}
 			continue
 		}
+		// 遇到 @tag，重置 pendingBlank（空行不跨 @tag 边界）
+		pendingBlank = false
 		// 取 "@" 之后的部分，按首个空格分割 tagName 和 value
 		rest := line[1:]
 		idx := strings.IndexAny(rest, " \t")

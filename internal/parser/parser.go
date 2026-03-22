@@ -497,8 +497,11 @@ func typeExprToString(expr ast.Expr) string {
 // ── comment helpers ───────────────────────────────────────────────────────────
 
 // mergeComments 合并多个注释组，返回去掉 `//` 前缀后的纯文本行。
+// 空行（`//` 无内容）在两段内容之间保留为 ""，以支持 Markdown 段落分隔；
+// 前导和尾随空行忽略，多个连续空行折叠为一个。
 func mergeComments(groups ...*ast.CommentGroup) []string {
 	var result []string
+	pendingBlank := false
 	for _, g := range groups {
 		if g == nil {
 			continue
@@ -510,7 +513,15 @@ func mergeComments(groups ...*ast.CommentGroup) []string {
 			} else if strings.HasPrefix(text, "/*") {
 				text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "/*"), "*/"))
 			}
-			if text != "" {
+			if text == "" {
+				if len(result) > 0 {
+					pendingBlank = true
+				}
+			} else {
+				if pendingBlank {
+					result = append(result, "")
+					pendingBlank = false
+				}
 				result = append(result, text)
 			}
 		}

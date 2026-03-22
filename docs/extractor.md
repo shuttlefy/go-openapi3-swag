@@ -66,7 +66,7 @@ type OperationAnnotation struct {
     Line        int
     Tags        []string
     Summary     string
-    Description string    // 无 @Description 时由非标签注释行自动拼接
+    Description string    // 无 @Description 时由非标签注释行自动拼接；支持 CommonMark Markdown
     OperationID string
     Accept      []string  // MIME 类型
     Produce     []string
@@ -169,6 +169,34 @@ type SecurityRequirement struct {
     Scopes []string // OAuth2 scope 列表；非 OAuth2 方案为空
 }
 ```
+
+## description 的 Markdown 支持
+
+`description` 字段（`GlobalAnnotation.Description` / `OperationAnnotation.Description`）支持 CommonMark Markdown。
+
+**已支持**：粗体、斜体、代码、列表、标题、段落等所有 Markdown 格式。
+
+**多段落写法（两种等价方式）**：
+
+```go
+// 方式一：用空的 @Description 行产生段落分隔
+//
+// @Description 第一段内容。
+// @Description
+// @Description 第二段内容。
+
+// 方式二：直接在普通注释中用空行分段（空行 `//` 即可）
+//
+// 第一段内容。
+//
+// 第二段内容。
+//
+// @Router /foo [get]
+```
+
+多个连续空行折叠为一个段落分隔（`\n\n`）；前导和尾随空行自动忽略。
+
+---
 
 ## 标签解析规则（tag_parser.go）
 

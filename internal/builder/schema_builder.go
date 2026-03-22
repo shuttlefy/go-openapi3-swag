@@ -41,8 +41,11 @@ func (sb *SchemaBuilder) buildStructSchema(s parser.RawStruct, file *parser.RawF
 // buildStructSchemaWithSubst 构建 struct schema，argMap 提供泛型类型参数的替换关系。
 func (sb *SchemaBuilder) buildStructSchemaWithSubst(s parser.RawStruct, file *parser.RawFile, argMap map[string]string) *spec3.Schema {
 	schema := &spec3.Schema{Type: "object"}
-	if len(s.Comments) > 0 {
-		schema.Description = s.Comments[0]
+	for _, c := range s.Comments {
+		if c != "" {
+			schema.Description = c
+			break
+		}
 	}
 
 	props := spec3.NewOrderedSchemas()
@@ -118,7 +121,15 @@ func (sb *SchemaBuilder) buildFieldSchema(
 	if info.description != "" {
 		s.Description = info.description
 	} else if len(field.Comments) > 0 {
-		s.Description = strings.Join(field.Comments, " ")
+		var nonEmpty []string
+		for _, c := range field.Comments {
+			if c != "" {
+				nonEmpty = append(nonEmpty, c)
+			}
+		}
+		if len(nonEmpty) > 0 {
+			s.Description = strings.Join(nonEmpty, " ")
+		}
 	}
 
 	applyTagConstraints(s, info)
