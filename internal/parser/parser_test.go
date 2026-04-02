@@ -408,7 +408,7 @@ func TestGoParser_Parse_Types(t *testing.T) {
 			byPath[imp.Path] = imp
 		}
 
-		for _, path := range []string{"context", "time", "net/url"} {
+		for _, path := range []string{"cmp", "context", "time", "net/url"} {
 			if _, ok := byPath[path]; !ok {
 				t.Errorf("missing import %q", path)
 			}
@@ -506,6 +506,65 @@ func TestGoParser_Parse_Types(t *testing.T) {
 		}
 		if kv.TypeParams[0].Name != "K" || kv.TypeParams[1].Name != "V" {
 			t.Errorf("KV TypeParams = %+v", kv.TypeParams)
+		}
+
+		// Generic struct: external-package constraint (cmp.Ordered)
+		grayList, ok := byName["GrayList"]
+		if !ok {
+			t.Fatal("missing GrayList struct")
+		}
+		if len(grayList.TypeParams) != 1 {
+			t.Fatalf("GrayList TypeParams = %d, want 1", len(grayList.TypeParams))
+		}
+		if grayList.TypeParams[0].Name != "T" || grayList.TypeParams[0].Constraint != "cmp.Ordered" {
+			t.Errorf("GrayList TypeParams[0] = %+v, want {T, cmp.Ordered}", grayList.TypeParams[0])
+		}
+		glFields := make(map[string]RawField)
+		for _, f := range grayList.Fields {
+			glFields[f.Name] = f
+		}
+		if bl, ok := glFields["Blacklist"]; !ok {
+			t.Error("GrayList missing Blacklist field")
+		} else if bl.TypeName != "[]T" {
+			t.Errorf("GrayList.Blacklist.TypeName = %q, want %q", bl.TypeName, "[]T")
+		}
+		if wl, ok := glFields["Whitelist"]; !ok {
+			t.Error("GrayList missing Whitelist field")
+		} else if wl.TypeName != "[]T" {
+			t.Errorf("GrayList.Whitelist.TypeName = %q, want %q", wl.TypeName, "[]T")
+		}
+
+		// Instantiated generic fields: GrayList[string] and GrayList[int]
+		ivConf, ok := byName["InitVersionGrayScaleConfig"]
+		if !ok {
+			t.Fatal("missing InitVersionGrayScaleConfig struct")
+		}
+		ivFields := make(map[string]RawField)
+		for _, f := range ivConf.Fields {
+			ivFields[f.Name] = f
+		}
+		if ua, ok := ivFields["UserAlias"]; !ok {
+			t.Error("InitVersionGrayScaleConfig missing UserAlias field")
+		} else if ua.TypeName != "GrayList[string]" {
+			t.Errorf("UserAlias.TypeName = %q, want %q", ua.TypeName, "GrayList[string]")
+		}
+		if did, ok := ivFields["DepartID"]; !ok {
+			t.Error("InitVersionGrayScaleConfig missing DepartID field")
+		} else if did.TypeName != "GrayList[int]" {
+			t.Errorf("DepartID.TypeName = %q, want %q", did.TypeName, "GrayList[int]")
+		}
+
+		// Nested struct wrapping generic instantiation
+		gsConf, ok := byName["GrayscaleConf"]
+		if !ok {
+			t.Fatal("missing GrayscaleConf struct")
+		}
+		if len(gsConf.Fields) != 1 {
+			t.Fatalf("GrayscaleConf fields = %d, want 1", len(gsConf.Fields))
+		}
+		if gsConf.Fields[0].Name != "InitVersionConf" || gsConf.Fields[0].TypeName != "InitVersionGrayScaleConfig" {
+			t.Errorf("GrayscaleConf.Fields[0] = {%q, %q}, want {InitVersionConf, InitVersionGrayScaleConfig}",
+				gsConf.Fields[0].Name, gsConf.Fields[0].TypeName)
 		}
 
 		// Struct tags
@@ -691,6 +750,32 @@ func TestGoParser_Parse_Types(t *testing.T) {
 			if !localByName[name] {
 				t.Errorf("missing local struct %q", name)
 			}
+		}
+
+		// FuncWithLocalTypeDef: 2 local type defs, 0 local structs
+		ftd, ok := byName["FuncWithLocalTypeDef"]
+		if !ok {
+			t.Fatal("missing FuncWithLocalTypeDef")
+		}
+		if len(ftd.LocalStructs) != 0 {
+			t.Errorf("FuncWithLocalTypeDef.LocalStructs = %d, want 0", len(ftd.LocalStructs))
+		}
+		if len(ftd.LocalTypeDefs) != 2 {
+			t.Fatalf("FuncWithLocalTypeDef.LocalTypeDefs = %d, want 2", len(ftd.LocalTypeDefs))
+		}
+		tdByName := make(map[string]RawTypeDef)
+		for _, td := range ftd.LocalTypeDefs {
+			tdByName[td.Name] = td
+		}
+		if view, ok := tdByName["View"]; !ok {
+			t.Error("missing local type def View")
+		} else if view.TypeName != "BaseModel" {
+			t.Errorf("View.TypeName = %q, want %q", view.TypeName, "BaseModel")
+		}
+		if vl, ok := tdByName["ViewList"]; !ok {
+			t.Error("missing local type def ViewList")
+		} else if vl.TypeName != "[]string" {
+			t.Errorf("ViewList.TypeName = %q, want %q", vl.TypeName, "[]string")
 		}
 	})
 }

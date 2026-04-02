@@ -3,6 +3,7 @@
 package types
 
 import (
+	"cmp"
 	"context"
 	alias "encoding/json"
 	"net/url"
@@ -283,6 +284,23 @@ type Numeric[T int | int32 | int64 | float32 | float64] struct {
 // 14. 泛型实例化字段
 // ─────────────────────────────────────────────
 
+// GrayList 泛型灰度名单，约束为 cmp.Ordered（外部包约束）。
+type GrayList[T cmp.Ordered] struct {
+	Blacklist []T `json:"blacklist"`
+	Whitelist []T `json:"whitelist"`
+}
+
+// InitVersionGrayScaleConfig 版本灰度配置，使用 GrayList 泛型实例化。
+type InitVersionGrayScaleConfig struct {
+	UserAlias GrayList[string] `json:"user_alias"`
+	DepartID  GrayList[int]    `json:"depart_id"`
+}
+
+// GrayscaleConf 顶层灰度配置，嵌套 InitVersionGrayScaleConfig。
+type GrayscaleConf struct {
+	InitVersionConf InitVersionGrayScaleConfig `json:"init_version_conf"`
+}
+
 // GenericUsage 在 struct 字段中使用泛型实例化类型。
 type GenericUsage struct {
 	StringPair  Pair[string]         `json:"string_pair"`
@@ -422,4 +440,17 @@ func FuncWithLocalStruct() {
 	}
 	_ = LocalReq{}
 	_ = LocalResp{}
+}
+
+// ─────────────────────────────────────────────
+// 21. 局部非 struct 类型定义（函数内 type Foo Bar）
+// ─────────────────────────────────────────────
+
+// FuncWithLocalTypeDef 函数内含局部非 struct 类型定义。
+// 模拟 type Response config.SomeStruct 场景（跨包类型别名）。
+func FuncWithLocalTypeDef() {
+	type View BaseModel    // 新类型定义（非别名、非 struct 字面量）
+	type ViewList []string // 复合底层类型
+	_ = View{}
+	_ = ViewList(nil)
 }

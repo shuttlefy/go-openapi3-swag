@@ -398,17 +398,18 @@ func extractFuncDecl(decl *ast.FuncDecl, fset *token.FileSet, rf *RawFile) {
 		}
 	}
 
-	// 函数体内的局部 struct
+	// 函数体内的局部类型定义
 	if decl.Body != nil {
-		fn.LocalStructs = extractLocalStructs(decl.Body, rf.FilePath)
+		fn.LocalStructs, fn.LocalTypeDefs = extractLocalTypes(decl.Body, rf.FilePath)
 	}
 
 	rf.Functions = append(rf.Functions, fn)
 }
 
-// extractLocalStructs 从函数体中提取所有局部 struct 定义。
-func extractLocalStructs(body *ast.BlockStmt, filePath string) []RawStruct {
-	var result []RawStruct
+// extractLocalTypes 从函数体中提取所有局部类型定义：
+//   - *ast.StructType → LocalStructs
+//   - 其他非别名类型（type Foo Bar）→ LocalTypeDefs
+func extractLocalTypes(body *ast.BlockStmt, filePath string) (structs []RawStruct, typedefs []RawTypeDef) {
 	ast.Inspect(body, func(n ast.Node) bool {
 		decl, ok := n.(*ast.GenDecl)
 		if !ok || decl.Tok != token.TYPE {
@@ -416,15 +417,23 @@ func extractLocalStructs(body *ast.BlockStmt, filePath string) []RawStruct {
 		}
 		for _, spec := range decl.Specs {
 			ts := spec.(*ast.TypeSpec)
-			st, ok := ts.Type.(*ast.StructType)
-			if !ok {
+			if st, ok := ts.Type.(*ast.StructType); ok {
+				structs = append(structs, buildStruct(ts, st, decl.Doc, filePath))
 				continue
 			}
-			result = append(result, buildStruct(ts, st, decl.Doc, filePath))
+			// 跳过类型别名（type Foo = Bar），仅处理新类型定义（type Foo Bar）
+			if ts.Assign.IsValid() {
+				continue
+			}
+			typedefs = append(typedefs, RawTypeDef{
+				Name:     ts.Name.Name,
+				TypeName: typeExprToString(ts.Type),
+				FilePath: filePath,
+			})
 		}
 		return true
 	})
-	return result
+	return
 }
 
 // ── type expression → string ──────────────────────────────────────────────────

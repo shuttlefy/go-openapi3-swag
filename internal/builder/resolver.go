@@ -298,7 +298,7 @@ func (r *Resolver) lookupAndBuild(key SchemaKey, pkg, typeName, funcName string,
 			continue
 		}
 
-		// 函数局部 struct
+		// 函数局部 struct / type def
 		if funcName != "" {
 			for _, fn := range rf.Functions {
 				if fn.Name != funcName {
@@ -313,6 +313,12 @@ func (r *Resolver) lookupAndBuild(key SchemaKey, pkg, typeName, funcName string,
 						r.localFuncCtx = prev
 						r.register(key, s)
 						return r.RefOf(key)
+					}
+				}
+				// 函数局部非 struct 类型定义（type Foo Bar）→ 透明穿透到底层类型
+				for _, td := range fn.LocalTypeDefs {
+					if td.Name == typeName {
+						return r.Resolve(td.TypeName, rf)
 					}
 				}
 			}

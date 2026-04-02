@@ -138,7 +138,8 @@
       "Bash(go build ./pkg/swaggin/... && go test ./pkg/swaggin/... 2>&1)",
       "Bash(go build ./pkg/swaggin/... 2>&1)",
       "Bash(go build:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(go test:*)"
     ]
   }
 }

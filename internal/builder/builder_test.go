@@ -2729,3 +2729,60 @@ func TestResolve_FourLevelChain(t *testing.T) {
 		}
 	}
 }
+
+// TestResolve_LocalTypeDef_CrossPackage 验证函数内局部非 struct 类型定义（type Response pkg.Struct）
+// 能正确穿透到底层类型，生成与底层类型等价的 schema。
+//
+// 对应实际场景：
+//
+//	func NewGrayscaleGetGrayscaleConfigController(conf *config.GrayscaleConf) gin.HandlerFunc {
+//	    type Response config.GrayscaleConf
+//	    // @Success 200 {object} response.baseResponse{data=controller.NewGrayscaleGetGrayscaleConfigController.Response}
+//	}
+func TestResolve_LocalTypeDef_CrossPackage(t *testing.T) {
+	r, sb := newResolver()
+
+	controllerFile := &parser.RawFile{
+		Package:  "controller",
+		FilePath: "/controller/grayscale.go",
+		Imports: []parser.RawImport{
+			{Alias: "", Path: "github.com/example/config", PkgName: "config"},
+		},
+		Functions: []parser.RawFunc{{
+			Name:     "NewGrayscaleGetGrayscaleConfigController",
+			FilePath: "/controller/grayscale.go",
+			// type Response config.GrayscaleConf → LocalTypeDef，非 LocalStruct
+			LocalTypeDefs: []parser.RawTypeDef{{
+				Name:     "Response",
+				TypeName: "config.GrayscaleConf",
+			}},
+		}},
+	}
+	configFile := &parser.RawFile{
+		Package:  "config",
+		FilePath: "/config/grayscale.go",
+		Structs: []parser.RawStruct{{
+			Name: "GrayscaleConf",
+			Fields: []parser.RawField{
+				{Name: "InitVersionConf", TypeName: "InitVersionGrayScaleConfig", Tag: `json:"init_version_conf"`},
+			},
+		}, {
+			Name: "InitVersionGrayScaleConfig",
+			Fields: []parser.RawField{
+				{Name: "UserAlias", TypeName: "string", Tag: `json:"user_alias"`},
+			},
+		}},
+	}
+	r.SetFiles([]*parser.RawFile{controllerFile, configFile})
+
+	// 解析 pkg.FuncName.TypeName 格式的局部类型定义
+	s := sb.Build("controller.NewGrayscaleGetGrayscaleConfigController.Response", controllerFile)
+	if s == nil {
+		t.Fatal("local type def Response should resolve to non-nil schema")
+	}
+
+	// type Response config.GrayscaleConf 应透明穿透，最终注册 config.GrayscaleConf schema
+	if r.Components().Schemas.Get("config.GrayscaleConf") == nil {
+		t.Error("config.GrayscaleConf should be registered in Components.Schemas via local type def passthrough")
+	}
+}

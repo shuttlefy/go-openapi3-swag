@@ -64,7 +64,8 @@ type RawFunc struct {
 	Receiver     string      // 方法接收者类型字符串，如 "*UserService"；函数为 ""
 	Params       []RawParam
 	Results      []RawParam
-	LocalStructs []RawStruct // 函数体内定义的局部 struct，作用域仅限本函数
+	LocalStructs  []RawStruct  // 函数体内定义的局部 struct，作用域仅限本函数
+	LocalTypeDefs []RawTypeDef // 函数体内的非 struct 类型定义（type Foo Bar）
 }
 
 // RawStruct 对应一个 struct 类型声明，支持泛型。
