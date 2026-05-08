@@ -162,7 +162,7 @@ func Register(r gin.IRouter, opts Options) {
 	if opts.FdocPath != "" && opts.FdocPath != "-" {
 		registerRoute(r, opts.FdocPath, FdocHandler(opts), opts)
 	}
-
+	fmt.Printf("setting: %v\n", opts)
 }
 
 // registerRoute registers a GET handler and, when CORS is enabled, also

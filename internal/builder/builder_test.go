@@ -10,17 +10,6 @@ import (
 	"github.com/shuttlefy/go-openapi3-swag/internal/parser"
 )
 
-// parseStoreFixture 用真实的 GoParser 解析 testdata/store（含 response 子目录）。
-func parseStoreFixture(t *testing.T) []*parser.RawFile {
-	t.Helper()
-	p := &parser.GoParser{MaxDepth: -1}
-	files, err := p.Parse([]string{"../../testdata/store"})
-	if err != nil {
-		t.Fatalf("parse testdata/store: %v", err)
-	}
-	return files
-}
-
 // parseAnnotationsFixture 用真实的 GoParser 解析 testdata/annotations（含所有子目录）。
 func parseAnnotationsFixture(t *testing.T) []*parser.RawFile {
 	t.Helper()

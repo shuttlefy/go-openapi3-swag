@@ -178,7 +178,7 @@ func extractGenDecl(decl *ast.GenDecl, rf *RawFile) {
 			ts := spec.(*ast.TypeSpec)
 			switch t := ts.Type.(type) {
 			case *ast.StructType:
-				s := buildStruct(ts, t, decl.Doc, rf.FilePath)
+				s := buildStruct(ts, t, decl.Doc, rf.FilePath, &rf.Structs)
 				rf.Structs = append(rf.Structs, s)
 			default:
 				if ts.Assign.IsValid() {
@@ -207,7 +207,9 @@ func extractGenDecl(decl *ast.GenDecl, rf *RawFile) {
 
 // ── structs ───────────────────────────────────────────────────────────────────
 
-func buildStruct(ts *ast.TypeSpec, st *ast.StructType, groupDoc *ast.CommentGroup, filePath string) RawStruct {
+// buildStruct constructs a RawStruct from AST nodes.
+// Anonymous struct field types are extracted into named entries appended to extra.
+func buildStruct(ts *ast.TypeSpec, st *ast.StructType, groupDoc *ast.CommentGroup, filePath string, extra *[]RawStruct) RawStruct {
 	s := RawStruct{
 		Name:     ts.Name.Name,
 		FilePath: filePath,
@@ -229,25 +231,27 @@ func buildStruct(ts *ast.TypeSpec, st *ast.StructType, groupDoc *ast.CommentGrou
 
 	// 字段
 	for _, field := range st.Fields.List {
-		s.Fields = append(s.Fields, extractFields(field)...)
+		s.Fields = append(s.Fields, extractFieldsMaybeAnon(field, s.Name, filePath, extra)...)
 	}
 
 	return s
 }
 
-func extractFields(field *ast.Field) []RawField {
-	typeName := typeExprToString(field.Type)
+// extractFieldsMaybeAnon processes a struct field. For named fields whose type
+// (or element type) is an anonymous struct, a synthetic named RawStruct is
+// appended to extra and the field's TypeName is set to that synthetic name.
+func extractFieldsMaybeAnon(field *ast.Field, parentName, filePath string, extra *[]RawStruct) []RawField {
 	tag := ""
 	if field.Tag != nil {
 		tag = strings.Trim(field.Tag.Value, "`")
 	}
 	comments := mergeComments(field.Doc, field.Comment)
 
-	// 嵌入字段（匿名）
+	// 嵌入字段（匿名）— 不可能是 anonymous struct literal, 直接走原路径
 	if len(field.Names) == 0 {
 		return []RawField{{
 			Name:     embeddedFieldName(field.Type),
-			TypeName: typeName,
+			TypeName: typeExprToString(field.Type),
 			Tag:      tag,
 			Comments: comments,
 			Embedded: true,
@@ -261,14 +265,49 @@ func extractFields(field *ast.Field) []RawField {
 		if len(ident.Name) > 0 && ident.Name[0] >= 'a' && ident.Name[0] <= 'z' {
 			continue
 		}
-		result = append(result, RawField{
-			Name:     ident.Name,
-			TypeName: typeName,
-			Tag:      tag,
-			Comments: comments,
-		})
+		syntheticName := parentName + "_" + ident.Name
+		if resolved := resolveAnonStructExpr(field.Type, syntheticName, filePath, extra); resolved != "" {
+			result = append(result, RawField{
+				Name:     ident.Name,
+				TypeName: resolved,
+				Tag:      tag,
+				Comments: comments,
+			})
+		} else {
+			result = append(result, RawField{
+				Name:     ident.Name,
+				TypeName: typeExprToString(field.Type),
+				Tag:      tag,
+				Comments: comments,
+			})
+		}
 	}
 	return result
+}
+
+// resolveAnonStructExpr inspects expr for an anonymous struct type (possibly
+// wrapped in [] or *). When found, the struct is registered in extra under
+// syntheticName and the resolved type string is returned (e.g. "[]syntheticName").
+// Returns "" when expr contains no anonymous struct.
+func resolveAnonStructExpr(expr ast.Expr, syntheticName, filePath string, extra *[]RawStruct) string {
+	switch e := expr.(type) {
+	case *ast.StructType:
+		anon := RawStruct{Name: syntheticName, FilePath: filePath}
+		for _, f := range e.Fields.List {
+			anon.Fields = append(anon.Fields, extractFieldsMaybeAnon(f, syntheticName, filePath, extra)...)
+		}
+		*extra = append(*extra, anon)
+		return syntheticName
+	case *ast.ArrayType:
+		if inner := resolveAnonStructExpr(e.Elt, syntheticName, filePath, extra); inner != "" {
+			return "[]" + inner
+		}
+	case *ast.StarExpr:
+		if inner := resolveAnonStructExpr(e.X, syntheticName, filePath, extra); inner != "" {
+			return "*" + inner
+		}
+	}
+	return ""
 }
 
 // embeddedFieldName 从嵌入字段的类型表达式中提取基名。
@@ -418,7 +457,7 @@ func extractLocalTypes(body *ast.BlockStmt, filePath string) (structs []RawStruc
 		for _, spec := range decl.Specs {
 			ts := spec.(*ast.TypeSpec)
 			if st, ok := ts.Type.(*ast.StructType); ok {
-				structs = append(structs, buildStruct(ts, st, decl.Doc, filePath))
+				structs = append(structs, buildStruct(ts, st, decl.Doc, filePath, &structs))
 				continue
 			}
 			// 跳过类型别名（type Foo = Bar），仅处理新类型定义（type Foo Bar）

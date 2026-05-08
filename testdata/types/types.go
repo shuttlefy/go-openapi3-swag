@@ -124,7 +124,7 @@ type DeepEmbed struct {
 // 6. 匿名 struct 字段
 // ─────────────────────────────────────────────
 
-// WithAnon 包含匿名 struct 字段。
+// WithAnon 包含直接匿名 struct 字段（非切片/指针包装）。
 type WithAnon struct {
 	Meta struct {
 		Version int    `json:"version"`
@@ -135,6 +135,39 @@ type WithAnon struct {
 		Timeout int    `json:"timeout"`
 	} `json:"config"`
 	Plain string `json:"plain"`
+}
+
+// WithAnonSlice 包含 []struct{...} 匿名 struct 切片字段。
+// 典型场景：API 返回的嵌套列表，如云厂商 DescribeInstanceTypes 的选项列表。
+type WithAnonSlice struct {
+	ComputingArchitecture []struct {
+		Text  string `json:"text"`
+		Value string `json:"value"`
+	} `json:"computingArchitecture"`
+	CustomizedFamily []struct {
+		Text  string `json:"text"`
+		Value string `json:"value"`
+	} `json:"customizeFamily"`
+}
+
+// WithAnonPtr 包含 *struct{...} 匿名 struct 指针字段。
+type WithAnonPtr struct {
+	Header *struct {
+		RequestID string `json:"request_id"`
+		TraceID   string `json:"trace_id"`
+	} `json:"header"`
+	Body string `json:"body"`
+}
+
+// WithNestedAnon 包含嵌套匿名 struct（匿名 struct 内再含匿名 struct 切片）。
+type WithNestedAnon struct {
+	Result struct {
+		Items []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"items"`
+		Total int `json:"total"`
+	} `json:"result"`
 }
 
 // ─────────────────────────────────────────────

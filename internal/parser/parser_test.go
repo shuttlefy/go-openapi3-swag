@@ -567,6 +567,91 @@ func TestGoParser_Parse_Types(t *testing.T) {
 				gsConf.Fields[0].Name, gsConf.Fields[0].TypeName)
 		}
 
+		// Anonymous struct slice fields ([]struct{...})
+		was, ok := byName["WithAnonSlice"]
+		if !ok {
+			t.Fatal("missing WithAnonSlice struct")
+		}
+		wasFields := make(map[string]RawField)
+		for _, f := range was.Fields {
+			wasFields[f.Name] = f
+		}
+		if f, ok := wasFields["ComputingArchitecture"]; !ok {
+			t.Error("WithAnonSlice missing ComputingArchitecture field")
+		} else if f.TypeName != "[]WithAnonSlice_ComputingArchitecture" {
+			t.Errorf("ComputingArchitecture.TypeName = %q, want %q", f.TypeName, "[]WithAnonSlice_ComputingArchitecture")
+		}
+		if f, ok := wasFields["CustomizedFamily"]; !ok {
+			t.Error("WithAnonSlice missing CustomizedFamily field")
+		} else if f.TypeName != "[]WithAnonSlice_CustomizedFamily" {
+			t.Errorf("CustomizedFamily.TypeName = %q, want %q", f.TypeName, "[]WithAnonSlice_CustomizedFamily")
+		}
+		// Synthetic structs must exist and carry their fields
+		for _, synName := range []string{"WithAnonSlice_ComputingArchitecture", "WithAnonSlice_CustomizedFamily"} {
+			syn, ok := byName[synName]
+			if !ok {
+				t.Errorf("missing synthetic struct %q", synName)
+				continue
+			}
+			if len(syn.Fields) != 2 {
+				t.Errorf("%s: want 2 fields, got %d", synName, len(syn.Fields))
+			}
+		}
+
+		// Anonymous struct pointer field (*struct{...})
+		wap, ok := byName["WithAnonPtr"]
+		if !ok {
+			t.Fatal("missing WithAnonPtr struct")
+		}
+		wapFields := make(map[string]RawField)
+		for _, f := range wap.Fields {
+			wapFields[f.Name] = f
+		}
+		if f, ok := wapFields["Header"]; !ok {
+			t.Error("WithAnonPtr missing Header field")
+		} else if f.TypeName != "*WithAnonPtr_Header" {
+			t.Errorf("Header.TypeName = %q, want %q", f.TypeName, "*WithAnonPtr_Header")
+		}
+		if syn, ok := byName["WithAnonPtr_Header"]; !ok {
+			t.Error("missing synthetic struct WithAnonPtr_Header")
+		} else if len(syn.Fields) != 2 {
+			t.Errorf("WithAnonPtr_Header: want 2 fields, got %d", len(syn.Fields))
+		}
+
+		// Nested anonymous struct (anon struct containing []struct{...})
+		wna, ok := byName["WithNestedAnon"]
+		if !ok {
+			t.Fatal("missing WithNestedAnon struct")
+		}
+		wnaFields := make(map[string]RawField)
+		for _, f := range wna.Fields {
+			wnaFields[f.Name] = f
+		}
+		if f, ok := wnaFields["Result"]; !ok {
+			t.Error("WithNestedAnon missing Result field")
+		} else if f.TypeName != "WithNestedAnon_Result" {
+			t.Errorf("Result.TypeName = %q, want %q", f.TypeName, "WithNestedAnon_Result")
+		}
+		// WithNestedAnon_Result must exist and have an Items field pointing to the inner synthetic struct
+		wnaResult, ok := byName["WithNestedAnon_Result"]
+		if !ok {
+			t.Fatal("missing synthetic struct WithNestedAnon_Result")
+		}
+		wnaResultFields := make(map[string]RawField)
+		for _, f := range wnaResult.Fields {
+			wnaResultFields[f.Name] = f
+		}
+		if f, ok := wnaResultFields["Items"]; !ok {
+			t.Error("WithNestedAnon_Result missing Items field")
+		} else if f.TypeName != "[]WithNestedAnon_Result_Items" {
+			t.Errorf("Items.TypeName = %q, want %q", f.TypeName, "[]WithNestedAnon_Result_Items")
+		}
+		if syn, ok := byName["WithNestedAnon_Result_Items"]; !ok {
+			t.Error("missing synthetic struct WithNestedAnon_Result_Items")
+		} else if len(syn.Fields) != 2 {
+			t.Errorf("WithNestedAnon_Result_Items: want 2 fields, got %d", len(syn.Fields))
+		}
+
 		// Struct tags
 		tv, ok := byName["TagVariants"]
 		if !ok {
