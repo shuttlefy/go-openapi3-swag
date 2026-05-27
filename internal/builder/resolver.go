@@ -3,6 +3,7 @@ package builder
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	spec3 "github.com/shuttlefy/go-openapi3-spec"
@@ -661,7 +662,15 @@ func buildEnumSchema(consts []parser.RawConst) *spec3.Schema {
 	hasDesc := false
 
 	for _, c := range consts {
-		schema.Enum = append(schema.Enum, c.Value)
+		if schema.Type == "integer" {
+			if v, err := strconv.ParseInt(c.Value, 10, 64); err == nil {
+				schema.Enum = append(schema.Enum, v)
+			} else {
+				schema.Enum = append(schema.Enum, c.Value)
+			}
+		} else {
+			schema.Enum = append(schema.Enum, c.Value)
+		}
 		varnames = append(varnames, c.Name)
 		desc := strings.Join(c.Comments, " ")
 		descriptions = append(descriptions, desc)
