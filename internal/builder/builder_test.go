@@ -890,9 +890,9 @@ func TestIndexCompositeOpen(t *testing.T) {
 // ── parseStructTags ───────────────────────────────────────────────────────────
 
 func TestParseStructTags_Basic(t *testing.T) {
-	info := parseStructTags(`json:"user_name" validate:"required"`, "UserName")
-	if info.jsonName != "user_name" {
-		t.Errorf("jsonName = %q", info.jsonName)
+	info := parseStructTags(`json:"user_name" validate:"required"`, "UserName", kindBody)
+	if info.name != "user_name" {
+		t.Errorf("name = %q", info.name)
 	}
 	if !info.required {
 		t.Error("required should be true")
@@ -903,23 +903,79 @@ func TestParseStructTags_Basic(t *testing.T) {
 }
 
 func TestParseStructTags_Skip(t *testing.T) {
-	info := parseStructTags(`json:"-"`, "Field")
+	info := parseStructTags(`json:"-"`, "Field", kindBody)
 	if !info.skip {
 		t.Error("json:\"-\" should skip")
 	}
 }
 
 func TestParseStructTags_Omitempty(t *testing.T) {
-	info := parseStructTags(`json:"name,omitempty"`, "Name")
-	if info.jsonName != "name" || !info.omitempty {
-		t.Errorf("got jsonName=%q omitempty=%v", info.jsonName, info.omitempty)
+	info := parseStructTags(`json:"name,omitempty"`, "Name", kindBody)
+	if info.name != "name" || !info.omitempty {
+		t.Errorf("got name=%q omitempty=%v", info.name, info.omitempty)
 	}
 }
 
 func TestParseStructTags_NoJsonTag(t *testing.T) {
-	info := parseStructTags(`validate:"required"`, "MyField")
-	if info.jsonName != "MyField" {
-		t.Errorf("jsonName should fall back to field name, got %q", info.jsonName)
+	info := parseStructTags(`validate:"required"`, "MyField", kindBody)
+	if info.name != "MyField" {
+		t.Errorf("name should fall back to field name, got %q", info.name)
+	}
+}
+
+func TestParseStructTags_QueryUsesFormTag(t *testing.T) {
+	info := parseStructTags(`form:"provider_code"`, "Provider", kindQuery)
+	if info.name != "provider_code" {
+		t.Errorf("query should pick form tag, got %q", info.name)
+	}
+}
+
+func TestParseStructTags_QueryFormWinsOverJson(t *testing.T) {
+	info := parseStructTags(`json:"provider" form:"provider_code"`, "Provider", kindQuery)
+	if info.name != "provider_code" {
+		t.Errorf("form should win over json for query, got %q", info.name)
+	}
+}
+
+func TestParseStructTags_QueryFallsBackToJson(t *testing.T) {
+	info := parseStructTags(`json:"provider"`, "Provider", kindQuery)
+	if info.name != "provider" {
+		t.Errorf("query should fall back to json when form missing, got %q", info.name)
+	}
+}
+
+func TestParseStructTags_QueryFormDashSkips(t *testing.T) {
+	info := parseStructTags(`form:"-" json:"provider"`, "Provider", kindQuery)
+	if !info.skip {
+		t.Error("form:\"-\" should skip on query position")
+	}
+}
+
+func TestParseStructTags_PathUsesUriTag(t *testing.T) {
+	info := parseStructTags(`uri:"user_id" json:"id"`, "ID", kindPath)
+	if info.name != "user_id" {
+		t.Errorf("path should pick uri tag, got %q", info.name)
+	}
+}
+
+func TestParseStructTags_HeaderUsesHeaderTag(t *testing.T) {
+	info := parseStructTags(`header:"X-Trace-Id" json:"trace_id"`, "TraceID", kindHeader)
+	if info.name != "X-Trace-Id" {
+		t.Errorf("header should pick header tag, got %q", info.name)
+	}
+}
+
+func TestParseStructTags_BodyIgnoresFormTag(t *testing.T) {
+	info := parseStructTags(`json:"name" form:"username"`, "Name", kindBody)
+	if info.name != "name" {
+		t.Errorf("body should only use json tag, got %q", info.name)
+	}
+}
+
+func TestParseStructTags_FormDataUsesFormTag(t *testing.T) {
+	info := parseStructTags(`form:"file_name"`, "FileName", kindFormData)
+	if info.name != "file_name" {
+		t.Errorf("formdata should pick form tag, got %q", info.name)
 	}
 }
 
@@ -927,6 +983,7 @@ func TestParseStructTags_Constraints(t *testing.T) {
 	info := parseStructTags(
 		`json:"price" minimum:"0" maximum:"999.99" minLength:"1" maxLength:"200" pattern:"^\\d+$" minItems:"1" maxItems:"10" uniqueItems:"true"`,
 		"Price",
+		kindBody,
 	)
 	if info.minimum == nil || *info.minimum != 0 {
 		t.Errorf("minimum = %v", info.minimum)
@@ -955,7 +1012,7 @@ func TestParseStructTags_Constraints(t *testing.T) {
 }
 
 func TestParseStructTags_AccessControl(t *testing.T) {
-	info := parseStructTags(`json:"id" readonly:"true" deprecated:"true"`, "ID")
+	info := parseStructTags(`json:"id" readonly:"true" deprecated:"true"`, "ID", kindBody)
 	if !info.readonly {
 		t.Error("readonly should be true")
 	}
@@ -965,17 +1022,167 @@ func TestParseStructTags_AccessControl(t *testing.T) {
 }
 
 func TestParseStructTags_Enums(t *testing.T) {
-	info := parseStructTags(`json:"status" enums:"active,inactive,deleted"`, "Status")
+	info := parseStructTags(`json:"status" enums:"active,inactive,deleted"`, "Status", kindBody)
 	if len(info.enum) != 3 || info.enum[0] != "active" || info.enum[2] != "deleted" {
 		t.Errorf("enum = %v", info.enum)
 	}
 }
 
 func TestParseStructTags_BindingRequired(t *testing.T) {
-	info := parseStructTags(`json:"name" binding:"required,min=3"`, "Name")
+	info := parseStructTags(`json:"name" binding:"required,min=3"`, "Name", kindBody)
 	if !info.required {
 		t.Error("binding:required should set required=true")
 	}
+}
+
+// ── 位置感知 tag 选择端到端 ───────────────────────────────────────────────────
+
+// expandQueryStruct 在内存中构造一个含 form tag 的 struct，并通过 expandStructParams 展开。
+func expandQueryStruct(t *testing.T, fields []parser.RawField, in string) []spec3.Parameter {
+	t.Helper()
+	r := NewResolver()
+	NewSchemaBuilder(r)
+	file := &parser.RawFile{
+		Package:  "p",
+		FilePath: "p.go",
+		Structs: []parser.RawStruct{{
+			Name:     "Req",
+			FilePath: "p.go",
+			Fields:   fields,
+		}},
+	}
+	r.SetFiles([]*parser.RawFile{file})
+
+	ob := NewOperationBuilder(r.sb)
+	out, err := ob.expandStructParams(extractor.ParamAnnotation{In: in, TypeName: "p.Req"}, file)
+	if err != nil {
+		t.Fatalf("expandStructParams: %v", err)
+	}
+	return out
+}
+
+func paramByName(params []spec3.Parameter, name string) *spec3.Parameter {
+	for i := range params {
+		if params[i].Name == name {
+			return &params[i]
+		}
+	}
+	return nil
+}
+
+// 用户实际场景：query struct 仅写 form tag，应被正确展开为 form tag 指定的参数名。
+func TestExpandStructParams_QueryUsesFormTag(t *testing.T) {
+	params := expandQueryStruct(t, []parser.RawField{
+		{Name: "Provider", TypeName: "*string", Tag: `form:"provider_code"`},
+		{Name: "Tenant", TypeName: "*string", Tag: `form:"tenant_code"`},
+		{Name: "Page", TypeName: "int32", Tag: `form:"page" binding:"required"`},
+		{Name: "PageSize", TypeName: "int32", Tag: `form:"page_size" binding:"required"`},
+	}, "query")
+
+	wantNames := []string{"provider_code", "tenant_code", "page", "page_size"}
+	if len(params) != len(wantNames) {
+		t.Fatalf("got %d params, want %d", len(params), len(wantNames))
+	}
+	for _, n := range wantNames {
+		if paramByName(params, n) == nil {
+			t.Errorf("missing param %q; got %+v", n, paramNames(params))
+		}
+	}
+	for _, p := range params {
+		if p.In != "query" {
+			t.Errorf("param %q in=%q, want query", p.Name, p.In)
+		}
+	}
+	// binding:"required" 透传
+	if p := paramByName(params, "page"); p == nil || !p.Required {
+		t.Errorf("page should be required")
+	}
+	if p := paramByName(params, "provider_code"); p == nil || p.Required {
+		t.Errorf("provider_code should not be required")
+	}
+}
+
+// query 同时存在 json 与 form 时，form 优先。
+func TestExpandStructParams_QueryFormBeatsJson(t *testing.T) {
+	params := expandQueryStruct(t, []parser.RawField{
+		{Name: "Provider", TypeName: "string", Tag: `json:"provider" form:"provider_code"`},
+	}, "query")
+	if len(params) != 1 || params[0].Name != "provider_code" {
+		t.Fatalf("form should win: %+v", paramNames(params))
+	}
+}
+
+// query 仅有 json 时，回退到 json（兼容仅写 json tag 的旧 struct）。
+func TestExpandStructParams_QueryFallbackToJson(t *testing.T) {
+	params := expandQueryStruct(t, []parser.RawField{
+		{Name: "Provider", TypeName: "string", Tag: `json:"provider"`},
+	}, "query")
+	if len(params) != 1 || params[0].Name != "provider" {
+		t.Fatalf("json fallback failed: %+v", paramNames(params))
+	}
+}
+
+// form:"-" 在 query 位置应当跳过。
+func TestExpandStructParams_QueryFormDashSkips(t *testing.T) {
+	params := expandQueryStruct(t, []parser.RawField{
+		{Name: "Hidden", TypeName: "string", Tag: `form:"-" json:"hidden"`},
+		{Name: "Visible", TypeName: "string", Tag: `form:"visible"`},
+	}, "query")
+	if len(params) != 1 || params[0].Name != "visible" {
+		t.Fatalf("form:\"-\" should skip; got %+v", paramNames(params))
+	}
+}
+
+// path 位置使用 uri tag。
+func TestExpandStructParams_PathUsesUriTag(t *testing.T) {
+	params := expandQueryStruct(t, []parser.RawField{
+		{Name: "ID", TypeName: "string", Tag: `uri:"user_id" json:"id"`},
+	}, "path")
+	if len(params) != 1 || params[0].Name != "user_id" || params[0].In != "path" {
+		t.Fatalf("path uri tag mismatch: %+v", params)
+	}
+}
+
+// header 位置使用 header tag。
+func TestExpandStructParams_HeaderUsesHeaderTag(t *testing.T) {
+	params := expandQueryStruct(t, []parser.RawField{
+		{Name: "TraceID", TypeName: "string", Tag: `header:"X-Trace-Id" json:"trace_id"`},
+	}, "header")
+	if len(params) != 1 || params[0].Name != "X-Trace-Id" || params[0].In != "header" {
+		t.Fatalf("header tag mismatch: %+v", params)
+	}
+}
+
+// body schema 应只看 json，不被 form tag 干扰（防止 query/body 复用同一 struct 时跨位置串名）。
+func TestBuildStructSchema_BodyIgnoresFormTag(t *testing.T) {
+	r := NewResolver()
+	sb := NewSchemaBuilder(r)
+	s := parser.RawStruct{
+		Name:     "Req",
+		FilePath: "p.go",
+		Fields: []parser.RawField{
+			{Name: "Provider", TypeName: "string", Tag: `json:"provider" form:"provider_code"`},
+		},
+	}
+	file := &parser.RawFile{Package: "p", FilePath: "p.go", Structs: []parser.RawStruct{s}}
+	r.SetFiles([]*parser.RawFile{file})
+
+	schema := sb.buildStructSchema(s, file)
+	if schema.Properties == nil {
+		t.Fatal("schema.Properties is nil")
+	}
+	keys := schema.Properties.Keys()
+	if len(keys) != 1 || keys[0] != "provider" {
+		t.Errorf("body should use json name only, got keys=%v", keys)
+	}
+}
+
+func paramNames(params []spec3.Parameter) []string {
+	names := make([]string, len(params))
+	for i, p := range params {
+		names[i] = p.Name
+	}
+	return names
 }
 
 // ── Resolver.Resolve — primitive & builtin ────────────────────────────────────

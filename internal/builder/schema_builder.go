@@ -38,6 +38,33 @@ func (sb *SchemaBuilder) buildStructSchema(s parser.RawStruct, file *parser.RawF
 	return sb.buildStructSchemaWithSubst(s, file, nil)
 }
 
+// paramKind 标识 struct 字段所在的 OpenAPI 参数位置，决定使用哪个 Go tag 解析字段名。
+type paramKind string
+
+const (
+	kindBody     paramKind = "body"
+	kindQuery    paramKind = "query"
+	kindPath     paramKind = "path"
+	kindHeader   paramKind = "header"
+	kindFormData paramKind = "formdata"
+)
+
+// nameTagsFor 返回该位置下命名 tag 的优先级列表。
+// 排第一的是该位置框架（如 gin）真正用于绑定的 tag；
+// json 作为兜底，兼容仅写了 json tag 的旧代码。
+func nameTagsFor(kind paramKind) []string {
+	switch kind {
+	case kindQuery, kindFormData:
+		return []string{"form", "json"}
+	case kindPath:
+		return []string{"uri", "json"}
+	case kindHeader:
+		return []string{"header", "json"}
+	default: // body / 未指定
+		return []string{"json"}
+	}
+}
+
 // buildStructSchemaWithSubst 构建 struct schema，argMap 提供泛型类型参数的替换关系。
 func (sb *SchemaBuilder) buildStructSchemaWithSubst(s parser.RawStruct, file *parser.RawFile, argMap map[string]string) *spec3.Schema {
 	schema := &spec3.Schema{Type: "object"}
@@ -62,7 +89,7 @@ func (sb *SchemaBuilder) buildStructSchemaWithSubst(s parser.RawStruct, file *pa
 			continue
 		}
 
-		propName, fieldSchema, isRequired, skip := sb.buildFieldSchema(field, file, argMap)
+		propName, fieldSchema, isRequired, skip := sb.buildFieldSchema(field, file, argMap, kindBody)
 		if skip || fieldSchema == nil {
 			continue
 		}
@@ -84,13 +111,15 @@ func (sb *SchemaBuilder) buildStructSchemaWithSubst(s parser.RawStruct, file *pa
 	return schema
 }
 
-// buildFieldSchema 将 RawField 解析为 (jsonName, schema, required, skip)。
+// buildFieldSchema 将 RawField 解析为 (name, schema, required, skip)。
+// kind 决定使用哪个 tag 作为字段名来源（json/form/uri/header）。
 func (sb *SchemaBuilder) buildFieldSchema(
 	field parser.RawField,
 	file *parser.RawFile,
 	argMap map[string]string,
+	kind paramKind,
 ) (string, *spec3.Schema, bool, bool) {
-	info := parseStructTags(field.Tag, field.Name)
+	info := parseStructTags(field.Tag, field.Name, kind)
 	if info.skip {
 		return "", nil, false, true
 	}
@@ -133,7 +162,7 @@ func (sb *SchemaBuilder) buildFieldSchema(
 	}
 
 	applyTagConstraints(s, info)
-	return info.jsonName, s, info.required, false
+	return info.name, s, info.required, false
 }
 
 // substituteTypeParam 在类型字符串中替换类型参数。
@@ -163,7 +192,7 @@ func shallowCloneSchema(s *spec3.Schema) *spec3.Schema {
 // ── Struct tag parsing ────────────────────────────────────────────────────────
 
 type fieldTagInfo struct {
-	jsonName    string
+	name        string // 字段在 OpenAPI 中暴露的名字（按位置选择 json/form/uri/header）
 	omitempty   bool
 	skip        bool
 	required    bool
@@ -186,24 +215,34 @@ type fieldTagInfo struct {
 }
 
 // parseStructTags 解析 Go struct tag 字符串，提取 OpenAPI 相关约束。
-func parseStructTags(rawTag, fieldName string) fieldTagInfo {
+// kind 决定字段命名 tag 的优先级；缺省按 body（json）处理。
+func parseStructTags(rawTag, fieldName string, kind paramKind) fieldTagInfo {
 	info := fieldTagInfo{}
 	tag := reflect.StructTag(rawTag)
 
-	// json tag
-	jsonVal := tag.Get("json")
-	if jsonVal == "-" {
-		info.skip = true
-		return info
+	// 命名 tag：按位置优先级查找，第一个出现的 tag 决定字段名与 skip 语义。
+	// 这与 gin 等框架行为一致（query 只看 form，body 只看 json），同时 json
+	// 作为兜底允许仅写 json tag 的旧 struct 在 query/path 等位置仍能正确导出。
+	for _, key := range nameTagsFor(kind) {
+		v, ok := tag.Lookup(key)
+		if !ok {
+			continue
+		}
+		if v == "-" {
+			info.skip = true
+			return info
+		}
+		parts := strings.SplitN(v, ",", 2)
+		if parts[0] != "" {
+			info.name = parts[0]
+		}
+		if len(parts) > 1 && strings.Contains(parts[1], "omitempty") {
+			info.omitempty = true
+		}
+		break
 	}
-	parts := strings.SplitN(jsonVal, ",", 2)
-	if parts[0] != "" {
-		info.jsonName = parts[0]
-	} else {
-		info.jsonName = fieldName
-	}
-	if len(parts) > 1 && strings.Contains(parts[1], "omitempty") {
-		info.omitempty = true
+	if info.name == "" {
+		info.name = fieldName
 	}
 
 	// required

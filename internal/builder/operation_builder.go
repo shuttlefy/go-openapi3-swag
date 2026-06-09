@@ -116,6 +116,7 @@ func (ob *OperationBuilder) expandStructParams(p extractor.ParamAnnotation, file
 	}
 
 	in := strings.ToLower(p.In)
+	kind := paramKind(in)
 	var params []spec3.Parameter
 
 	for _, field := range rawStruct.Fields {
@@ -129,7 +130,7 @@ func (ob *OperationBuilder) expandStructParams(p extractor.ParamAnnotation, file
 			continue
 		}
 
-		jsonName, schema, isRequired, skip := ob.schema.buildFieldSchema(field, structFile, nil)
+		name, schema, isRequired, skip := ob.schema.buildFieldSchema(field, structFile, nil, kind)
 		if skip || schema == nil {
 			continue
 		}
@@ -140,7 +141,7 @@ func (ob *OperationBuilder) expandStructParams(p extractor.ParamAnnotation, file
 		schemaCopy.Description = ""
 
 		params = append(params, spec3.Parameter{
-			Name:        jsonName,
+			Name:        name,
 			In:          in,
 			Required:    isRequired,
 			Description: strPtr(desc),

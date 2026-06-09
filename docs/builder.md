@@ -154,17 +154,33 @@ func (sb *SchemaBuilder) Components() *spec3.Components
 
 ### struct → Schema
 
-1. 遍历 `RawStruct.Fields`，跳过 `json:"-"` 字段
+1. 遍历 `RawStruct.Fields`，按位置（kind）选择命名 tag，遇到 `tag:"-"` 跳过字段
 2. 对嵌入字段（`Embedded=true`）递归展开，合并属性
 3. 对每个字段解析 struct tag（见下），再调用 `Resolver.Resolve` 得到字段 schema
 4. 收集 `binding:"required"` / `validate:"required"` 字段名到 `schema.Required`
 
 ### struct tag 解析（`parseStructTags`）
 
+`parseStructTags(rawTag, fieldName, kind)` 接受参数位置（`kind`），按 OpenAPI 位置选择**命名 tag**优先级，与 gin 等框架的绑定行为一致：
+
+| 参数位置 (`in`) | 命名 tag 优先级 |
+|-----------------|----------------|
+| `body`          | `json` |
+| `query`         | `form` → `json` |
+| `formData`      | `form` → `json` |
+| `path`          | `uri` → `json` |
+| `header`        | `header` → `json` |
+| `cookie`        | `json` |
+
+规则：
+- **首个出现的 tag** 决定字段名与 `-` 跳过语义。例如 query 位置上 `form:"-"` 直接跳过该字段，不再回退到 `json`。
+- 若优先级第一的 tag 完全缺失，回退到下一个（`json` 兜底，兼容旧代码仅写 `json` tag 的 struct）。
+- `body` 位置只看 `json`，不会被 `form` tag 干扰（确保同一个 struct 既可作为 query 也可作为 body 时不串名）。
+
+约束 tag（与命名无关，所有位置一致）：
+
 | Tag | 对应 OpenAPI |
 |-----|-------------|
-| `json:"name"` | 属性名 |
-| `json:"-"` | 跳过字段 |
 | `binding/validate:"required"` | `required` |
 | `description:"..."` | `description` |
 | `example:"..."` | `example` |

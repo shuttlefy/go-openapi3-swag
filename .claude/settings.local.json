@@ -140,7 +140,11 @@
       "Bash(go build:*)",
       "Bash(grep:*)",
       "Bash(go test:*)",
-      "Bash(go mod:*)"
+      "Bash(go mod:*)",
+      "Bash(/usr/bin/grep -rn \"\\\\\"form\\\\\"\" /data/home/brayden/projects/swag3/internal --include=\"*.go\")",
+      "Bash(/usr/bin/grep -rn \"form\" /data/home/brayden/projects/swag3/internal/parser)",
+      "Bash(/usr/bin/grep -rln \"form\" /data/home/brayden/projects/swag3 --include=\"*.go\")",
+      "Bash(/usr/bin/grep *)"
     ]
   }
 }

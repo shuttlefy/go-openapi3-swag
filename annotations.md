@@ -383,8 +383,13 @@ modelsv2.Order  →  components/schemas/models.Order  ← 与上面冲突！
 **规则：**
 - 名称必须为 `""`，类型必须是 struct 引用；原始类型（`string`、`integer` 等）使用 `""` 名称属于错误。
 - 仅支持 `query`、`header`、`cookie` 位置（非 `body` / `formData`）。
-- struct 的字段约束（`json` 名称、`binding:"required"`、`format`、`enums`、`example`、`minimum`/`maximum` 等 struct tag）全部保留。
-- `json:"-"` 字段自动跳过。
+- struct 的字段约束（`binding:"required"`、`format`、`enums`、`example`、`minimum`/`maximum` 等 struct tag）全部保留。
+- 字段名按位置选择命名 tag，与 gin 等框架的绑定行为一致：
+  - `query` → `form` 优先，缺失时回退 `json`
+  - `path` → `uri` 优先，缺失时回退 `json`
+  - `header` → `header` 优先，缺失时回退 `json`
+  - `body` → 仅 `json`
+- 首个出现的 tag 决定字段名与 `-` 跳过语义。例如 query 位置上 `form:"-"` 直接跳过该字段。
 - 嵌入字段（embedded struct）递归展开。
 - 类型所在包无需在当前文件中 `import`，工具会在已扫描的所有文件中兜底查找。
 
@@ -422,7 +427,29 @@ func GetSubnet(c *gin.Context) {
 }
 ```
 
-以上两种写法等价于逐一声明各字段为独立的 `query` 参数。
+**示例三：使用 `form` tag（推荐用于 query / formData）**
+
+字段名按 OpenAPI 位置选择命名 tag。query 位置应直接使用 gin 绑定用的 `form` tag：
+
+```go
+// GetAccountList 查询账号列表。
+//
+// @Param "" query controller.GetAccountList.Request true "请求参数"
+// @Router /account/list [get]
+func GetAccountList(c *gin.Context) {
+    type Request struct {
+        Provider *string `form:"provider_code"` // 云厂商
+        Tenant   *string `form:"tenant_code"`   // 主体
+        Page     int32   `form:"page"      binding:"required"`
+        PageSize int32   `form:"page_size" binding:"required"`
+    }
+    // ...
+}
+```
+
+展开后会得到 `provider_code` / `tenant_code` / `page` / `page_size` 四个 query 参数。`form:"-"` 会跳过对应字段。
+
+以上写法等价于逐一声明各字段为独立的 `query` 参数。
 
 ### 请求体（Request Body）
 
